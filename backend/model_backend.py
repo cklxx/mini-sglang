@@ -15,7 +15,7 @@ from typing import Any, List, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from optimizations import configure_torch, maybe_compile_model
+from optimizations import configure_torch, inference_context, maybe_compile_model
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,8 @@ class ModelBackend:
             input_ids.shape[1],
             self.device,
         )
-        with torch.no_grad():
+        auto_ctx, inf_ctx = inference_context(self.device)
+        with auto_ctx, inf_ctx:
             outputs = self.model(input_ids=input_ids, use_cache=True)
         logits = outputs.logits[:, -1, :]
         first_token_id = torch.argmax(logits, dim=-1).item()
@@ -105,7 +106,8 @@ class ModelBackend:
             last_token_id,
             self.decode_tokens([last_token_id]),
         )
-        with torch.no_grad():
+        auto_ctx, inf_ctx = inference_context(self.device)
+        with auto_ctx, inf_ctx:
             outputs = self.model(
                 input_ids=input_ids, past_key_values=kv_cache, use_cache=True
             )
@@ -136,7 +138,8 @@ class ModelBackend:
             max_new_tokens,
             self.device,
         )
-        with torch.no_grad():
+        auto_ctx, inf_ctx = inference_context(self.device)
+        with auto_ctx, inf_ctx:
             outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -168,7 +171,8 @@ class ModelBackend:
         log_stride = max(1, int(os.getenv("BASELINE_STREAM_LOG_STRIDE", str(log_stride))))
 
         def _generate() -> None:
-            with torch.no_grad():
+            auto_ctx, inf_ctx = inference_context(self.device)
+            with auto_ctx, inf_ctx:
                 self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,

@@ -98,6 +98,12 @@ Flags:
 * `--no-optimizations`: disable torch perf knobs and warmup
 * `--no-bootstrap`: skip auto-install if deps are pre-installed
 
+Performance knobs (inspired by sglang defaults):
+- TF32/benchmark flags for CUDA and tuned matmul precision (set via env `MATMUL_PRECISION`, `ENABLE_SDP=0` to disable flash/mem-efficient attention on CUDA).
+- `torch.compile` opt-in (`--compile-model` or `COMPILE_MODEL=1`, `COMPILE_MODE` to adjust mode).
+- Autocast + inference_mode around forward/generate to cut Python/dispatch overhead.
+- One-shot warmup run before benchmarks (skip with `--no-warmup` or `--no-optimizations`).
+
 Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
 
 Start HTTP server:
