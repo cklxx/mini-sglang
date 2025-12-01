@@ -123,7 +123,7 @@ class ModelBackend:
         with auto_ctx, inf_ctx:
             outputs = self.model(input_ids=input_ids, use_cache=True)
         logits = outputs.logits[:, -1, :]
-        first_token_id = torch.argmax(logits, dim=-1).item()
+        first_token_id = int(torch.argmax(logits, dim=-1).item())
         kv_cache = outputs.past_key_values
 
         if prompt_key is not None:
