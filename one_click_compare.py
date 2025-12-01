@@ -16,12 +16,12 @@ import argparse
 import importlib.util
 import logging
 import os
+import platform
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional, Tuple
-import platform
+from typing import Any, Optional, Sequence, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -121,9 +121,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "prompt",
-        nargs="?",
-        default="Hello from mini-sglang",
-        help="Prompt to feed the model",
+        nargs="*",
+        default=["Hello from mini-sglang"],
+        help=(
+            "Prompt(s) to feed the model. Provide multiple values with --multi-turn "
+            "to simulate a chat benchmark."
+        ),
+    )
+    parser.add_argument(
+        "--multi-turn",
+        action="store_true",
+        help="Treat the prompts as sequential user turns for a chat benchmark",
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -188,6 +196,45 @@ def run_streaming(
     return final_text, duration
 
 
+def build_chat_prompt(history: list[tuple[str, str]], user_turn: str) -> str:
+    """Format chat history into a prompt."""
+
+    segments: list[str] = []
+    for prev_user, prev_bot in history:
+        segments.append(f"User: {prev_user}\nAssistant: {prev_bot}")
+    segments.append(f"User: {user_turn}\nAssistant:")
+    return "\n".join(segments)
+
+
+def run_streaming_chat(
+    *, engine: Any, user_turns: Sequence[str], max_new_tokens: Optional[int]
+) -> Tuple[list[tuple[str, str]], float]:
+    history: list[tuple[str, str]] = []
+    total_duration = 0.0
+
+    for turn_index, user_turn in enumerate(user_turns, 1):
+        prompt = build_chat_prompt(history, user_turn)
+        chunks: list[str] = []
+        start = time.perf_counter()
+
+        def stream_callback(text_delta: str) -> None:
+            chunks.append(text_delta)
+            logging.info(
+                "[stream][turn %d] chunk %03d: %r",
+                turn_index,
+                len(chunks),
+                text_delta,
+            )
+
+        response = engine.run_generate(
+            prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=stream_callback
+        )
+        total_duration += time.perf_counter() - start
+        history.append((user_turn, response))
+
+    return history, total_duration
+
+
 def run_traditional(
     backend: Any, prompt: str, max_new_tokens: int
 ) -> Tuple[str, float]:
@@ -199,6 +246,26 @@ def run_traditional(
     text = backend.decode_tokens(generated_ids)
     duration = time.perf_counter() - start
     return text, duration
+
+
+def run_traditional_chat(
+    *, backend: Any, user_turns: Sequence[str], max_new_tokens: int
+) -> Tuple[list[tuple[str, str]], float]:
+    history: list[tuple[str, str]] = []
+    total_duration = 0.0
+
+    for user_turn in user_turns:
+        prompt = build_chat_prompt(history, user_turn)
+        prompt_ids = backend.tokenize(prompt)
+        start = time.perf_counter()
+        generated_ids = backend.generate_greedy(
+            prompt_ids=prompt_ids, max_new_tokens=max_new_tokens
+        )
+        response = backend.decode_tokens(generated_ids)
+        total_duration += time.perf_counter() - start
+        history.append((user_turn, response))
+
+    return history, total_duration
 
 
 def summarize(
@@ -217,6 +284,24 @@ def summarize(
         tokens / duration if duration > 0 else 0.0,
     )
     print(f"\n{mode} output preview: {text[:120]!r}\n")
+
+
+def summarize_chat(
+    *, mode: str, history: list[tuple[str, str]], duration: float, backend: Any
+) -> None:
+    responses = [bot for _, bot in history]
+    combined = "\n".join(responses)
+    tokens = len(backend.tokenize(combined)) if responses else 0
+    logging.info(
+        "%s chat summary: turns=%d tokens=%d duration=%.3fs throughput=%.2f tok/s",
+        mode,
+        len(history),
+        tokens,
+        duration,
+        tokens / duration if duration > 0 else 0.0,
+    )
+    last_reply = responses[-1] if responses else ""
+    print(f"\n{mode} last reply preview: {last_reply[:120]!r}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -253,26 +338,47 @@ def main() -> None:
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )
 
+    user_turns = args.prompt or ["Hello from mini-sglang"]
     token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
     logging.info(
-        "Starting comparison with max_new_tokens=%d (prompt=%r)",
+        "Starting comparison with max_new_tokens=%d (prompts=%r)",
         token_budget,
-        args.prompt,
+        user_turns,
     )
 
-    logging.info("=== Streaming via mini-sglang (prefill + decode) ===")
-    stream_text, stream_duration = run_streaming(
-        engine=engine, prompt=args.prompt, max_new_tokens=token_budget
-    )
-    summarize(mode="Streaming", text=stream_text, duration=stream_duration, backend=backend)
+    if args.multi_turn or len(user_turns) > 1:
+        logging.info("=== Streaming multi-turn via mini-sglang (prefill + decode) ===")
+        stream_history, stream_duration = run_streaming_chat(
+            engine=engine, user_turns=user_turns, max_new_tokens=token_budget
+        )
+        summarize_chat(
+            mode="Streaming", history=stream_history, duration=stream_duration, backend=backend
+        )
 
-    logging.info("=== Traditional single-call generate() ===")
-    greedy_text, greedy_duration = run_traditional(
-        backend=backend, prompt=args.prompt, max_new_tokens=token_budget
-    )
-    summarize(
-        mode="Traditional generate", text=greedy_text, duration=greedy_duration, backend=backend
-    )
+        logging.info("=== Traditional multi-turn generate() ===")
+        greedy_history, greedy_duration = run_traditional_chat(
+            backend=backend, user_turns=user_turns, max_new_tokens=token_budget
+        )
+        summarize_chat(
+            mode="Traditional generate", history=greedy_history, duration=greedy_duration, backend=backend
+        )
+    else:
+        prompt = user_turns[0]
+        logging.info("=== Streaming via mini-sglang (prefill + decode) ===")
+        stream_text, stream_duration = run_streaming(
+            engine=engine, prompt=prompt, max_new_tokens=token_budget
+        )
+        summarize(
+            mode="Streaming", text=stream_text, duration=stream_duration, backend=backend
+        )
+
+        logging.info("=== Traditional single-call generate() ===")
+        greedy_text, greedy_duration = run_traditional(
+            backend=backend, prompt=prompt, max_new_tokens=token_budget
+        )
+        summarize(
+            mode="Traditional generate", text=greedy_text, duration=greedy_duration, backend=backend
+        )
 
     print("Done. Use the logs above to trace each step.")
 
