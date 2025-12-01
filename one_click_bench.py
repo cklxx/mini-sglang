@@ -38,7 +38,8 @@ def run_server_stream(prompt: str, max_new_tokens: int) -> Tuple[str, float, flo
         for raw_line in resp.iter_lines():
             if not raw_line:
                 continue
-            line = raw_line.decode("utf-8").strip()
+            line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8")
+            line = line.strip()
             msg = json.loads(line)
             if "text_delta" in msg:
                 chunks.append(msg["text_delta"])
