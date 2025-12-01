@@ -143,12 +143,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "prompt",
         nargs="*",
-        default=[
-            "List concrete reasons streaming token generation improves latency and UX for real-time chat assistants."
-        ],
         help=(
             "Prompt(s) to feed the model. Provide multiple values with --multi-turn "
-            "to simulate a chat benchmark."
+            "to simulate a chat benchmark. If omitted, the preset benchmark suite "
+            "will run."
         ),
     )
     parser.add_argument(
@@ -498,11 +496,9 @@ def main() -> None:
     )
 
     token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
-    user_turns = args.prompt or [
-        "List concrete reasons streaming token generation improves latency and UX for real-time chat assistants."
-    ]
+    user_turns = args.prompt
 
-    if args.benchmark_suite:
+    if args.benchmark_suite or not user_turns:
         logging.info(
             "Running benchmark suite with model=%s max_new_tokens=%d",
             model_name,

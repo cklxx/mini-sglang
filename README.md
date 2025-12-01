@@ -29,6 +29,8 @@ uv run python one_click_compare.py --multi-turn \
   "Give me a TL;DR"
 ```
 
+If you run `python one_click_compare.py` with no prompt, it will now default to the preset benchmark suite (short, long, and two-turn scenarios) and print a throughput comparison table.
+
 Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
 
 ## Project layout
