@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -117,7 +117,7 @@ class ModelBackend:
                     input_ids.shape[1],
                     first_token_id,
                 )
-                return first_token_id, cached_kv
+                return int(first_token_id), cached_kv
 
         auto_ctx, inf_ctx = inference_context(self.device)
         with auto_ctx, inf_ctx:
