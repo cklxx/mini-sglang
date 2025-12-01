@@ -21,6 +21,9 @@ class ModelBackend:
 
     def __init__(self, model_name: str, device: str) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token is not None:
+            # Align pad with EOS so we can build explicit attention masks.
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         self.model.to(device)
         self.model.eval()
@@ -36,6 +39,10 @@ class ModelBackend:
         if eos_id is None:
             eos_id = 0
         self.eos_token_id = eos_id
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.eos_token_id
+        if self.model.generation_config.pad_token_id is None:
+            self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
 
         logger.info(
             "Model backend ready: model=%s device=%s eos_token_id=%s",
@@ -114,6 +121,7 @@ class ModelBackend:
         """
 
         input_ids = torch.tensor(prompt_ids, device=self.device).unsqueeze(0)
+        attention_mask = torch.ones_like(input_ids)
         logger.info(
             "Running generate_greedy with seq_len=%d max_new_tokens=%d on %s",
             input_ids.shape[1],
@@ -123,9 +131,12 @@ class ModelBackend:
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids=input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 use_cache=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.eos_token_id,
             )
         full_ids: List[int] = outputs[0].tolist()
         generated_only = full_ids[len(prompt_ids) :]
