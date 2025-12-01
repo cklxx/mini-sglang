@@ -13,6 +13,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional, Tuple
 
+import httpx
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
@@ -22,17 +24,85 @@ from optimizations import configure_torch, inference_context, maybe_compile_mode
 logger = logging.getLogger(__name__)
 
 
+def resolve_model_path(model_name: str) -> str:
+    """Return a local model path, falling back to ModelScope when HF is blocked.
+
+    The flow prefers an existing local Hugging Face cache, then tries a quick
+    HEAD check + download from huggingface.co. If that fails (e.g., network
+    egress is blocked), it falls back to ModelScope ("魔搭") using the same
+    model id or ``MODELSCOPE_MODEL_NAME`` if provided.
+    """
+
+    local_override = os.getenv("MODEL_LOCAL_DIR")
+    if local_override:
+        logger.info("Using MODEL_LOCAL_DIR=%s", local_override)
+        return local_override
+
+    # 1) Use cached Hugging Face files if they already exist to avoid network.
+    try:
+        from huggingface_hub import snapshot_download as hf_snapshot_download
+
+        cached_path = hf_snapshot_download(repo_id=model_name, local_files_only=True)
+        logger.info("Using cached Hugging Face model at %s", cached_path)
+        return cached_path
+    except Exception:
+        cached_path = None
+
+    # 2) Try Hugging Face if reachable.
+    hf_ok = False
+    try:
+        resp = httpx.head(
+            f"https://huggingface.co/{model_name}",
+            follow_redirects=True,
+            timeout=3.0,
+        )
+        hf_ok = resp.status_code < 400
+        if not hf_ok:
+            logger.warning(
+                "Hugging Face responded with status %s for %s", resp.status_code, model_name
+            )
+    except Exception as err:  # pragma: no cover - best-effort network probe
+        logger.warning("Hugging Face connectivity check failed: %s", err)
+
+    if hf_ok:
+        try:
+            from huggingface_hub import snapshot_download as hf_snapshot_download
+
+            hf_path = hf_snapshot_download(repo_id=model_name, local_files_only=False)
+            logger.info("Downloaded model from Hugging Face to %s", hf_path)
+            return hf_path
+        except Exception as err:
+            logger.warning("Hugging Face download failed (%s); trying ModelScope.", err)
+
+    # 3) Fallback to ModelScope (魔搭)
+    ms_repo = os.getenv("MODELSCOPE_MODEL_NAME", model_name)
+    try:
+        from modelscope import snapshot_download as ms_snapshot_download
+
+        ms_path = ms_snapshot_download(ms_repo)
+        logger.info("Downloaded model from ModelScope repo=%s to %s", ms_repo, ms_path)
+        return ms_path
+    except Exception as err:
+        logger.error(
+            "Model download failed from Hugging Face%s and ModelScope",
+            " (cache hit)" if cached_path else "",
+            exc_info=err,
+        )
+        raise
+
+
 class ModelBackend:
     """Backend that handles model/tokenizer loading and forward passes."""
 
     def __init__(self, model_name: str, device: str, compile_model: bool = False) -> None:
         compile_model = compile_model or os.getenv("COMPILE_MODEL", "0") == "1"
         configure_torch(device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model_path = resolve_model_path(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token is not None:
             # Align pad with EOS so we can build explicit attention masks.
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path)
         self.model = maybe_compile_model(self.model, device=device, enabled=compile_model)
         self.model.to(device)
         self.model.eval()

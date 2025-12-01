@@ -7,7 +7,7 @@ A minimal, streaming-first implementation of an sglang-style text generation sta
 > Prefer `uv`? A `pyproject.toml` is now committed so you can run `uv sync` to
 > install deps from the project metadata instead of the requirements file.
 
-If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download a modern small instruct model, and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
+If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download a modern small instruct model (falls back to 魔搭 ModelScope when huggingface.co is blocked), and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
 
 ```bash
 uv run python one_click_compare.py "Hello mini-sglang"
@@ -136,6 +136,10 @@ Benchmark the server path (TTFB + throughput):
 ```bash
 python server_benchmark.py --max-new-tokens 128
 ```
+The server benchmark now prints three views side-by-side so you can see how the
+streaming FastAPI path compares to the HF streaming baseline **and** an
+in-process mini-sglang engine run (no HTTP overhead). Use ``--no-bootstrap``
+if you've already installed dependencies (``sglang`` is now included).
 
 One-click bench (sglang vs HF streaming vs HTTP server):
 ```bash
@@ -158,7 +162,9 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`).
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`). If huggingface.co
+is unreachable, the loader will auto-fallback to the same repo on 魔搭 ModelScope (override with `MODELSCOPE_MODEL_NAME` or use
+`MODEL_LOCAL_DIR` to point at a pre-downloaded path).
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 
