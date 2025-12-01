@@ -92,7 +92,7 @@ class ModelBackend:
     def decode_forward(self, last_token_id: int, kv_cache: Any) -> Tuple[int, Any]:
         """Run a single decode step using the existing KV cache."""
         input_ids = torch.tensor([[last_token_id]], device=self.device)
-        logger.info(
+        logger.debug(
             "Running decode_forward with last_token_id=%d (text=%r)",
             last_token_id,
             self.decode_tokens([last_token_id]),
@@ -104,7 +104,7 @@ class ModelBackend:
         logits = outputs.logits[:, -1, :]
         next_token_id = torch.argmax(logits, dim=-1).item()
         new_kv_cache = outputs.past_key_values
-        logger.info(
+        logger.debug(
             "Decode step produced next_token_id=%d (text=%r)",
             next_token_id,
             self.decode_tokens([next_token_id]),

@@ -6,6 +6,7 @@ state, prefill + decode loops, and streaming callbacks on top of the backend.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
@@ -29,9 +30,17 @@ class RequestState:
 class SGLangMiniEngine:
     """Simple engine orchestrating generation using a ModelBackend."""
 
-    def __init__(self, backend: ModelBackend, max_new_tokens_default: int) -> None:
+    def __init__(
+        self,
+        backend: ModelBackend,
+        max_new_tokens_default: int,
+        decode_log_stride: Optional[int] = None,
+    ) -> None:
         self.backend = backend
         self.max_new_tokens_default = max_new_tokens_default
+        self.decode_log_stride = decode_log_stride or int(
+            os.getenv("DECODE_LOG_STRIDE", "8")
+        )
 
     def run_generate(
         self,
@@ -81,13 +90,19 @@ class SGLangMiniEngine:
                 if next_token_id == state.eos_token_id:
                     state.finished = True
                 text_delta = self.backend.decode_tokens([next_token_id])
-                logger.info(
-                    "Decode step %d emitted token_id=%d text=%r finished=%s",
-                    step_index,
-                    next_token_id,
-                    text_delta,
-                    state.finished,
+                should_log = (
+                    step_index < 2
+                    or (step_index + 1) % max(1, self.decode_log_stride) == 0
+                    or state.finished
                 )
+                if should_log:
+                    logger.info(
+                        "Decode step %d emitted token_id=%d text=%r finished=%s",
+                        step_index,
+                        next_token_id,
+                        text_delta,
+                        state.finished,
+                    )
                 stream_callback(text_delta)
 
         full_text = self.backend.decode_tokens(state.generated_ids)

@@ -208,11 +208,13 @@ def run_streaming(
     max_new_tokens: Optional[int],
 ) -> Tuple[str, float]:
     chunks: list[str] = []
+    log_stride = max(1, int(os.getenv("STREAM_LOG_STRIDE", "8")))
     start = time.perf_counter()
 
     def stream_callback(text_delta: str) -> None:
         chunks.append(text_delta)
-        logging.info("[stream] chunk %03d: %r", len(chunks), text_delta)
+        if len(chunks) <= 2 or len(chunks) % log_stride == 0:
+            logging.info("[stream] chunk %03d: %r", len(chunks), text_delta)
 
     final_text = engine.run_generate(
         prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=stream_callback
@@ -236,6 +238,7 @@ def run_streaming_chat(
 ) -> Tuple[list[tuple[str, str]], float]:
     history: list[tuple[str, str]] = []
     total_duration = 0.0
+    log_stride = max(1, int(os.getenv("STREAM_LOG_STRIDE", "8")))
 
     for turn_index, user_turn in enumerate(user_turns, 1):
         prompt = build_chat_prompt(history, user_turn)
@@ -244,12 +247,13 @@ def run_streaming_chat(
 
         def stream_callback(text_delta: str) -> None:
             chunks.append(text_delta)
-            logging.info(
-                "[stream][turn %d] chunk %03d: %r",
-                turn_index,
-                len(chunks),
-                text_delta,
-            )
+            if len(chunks) <= 2 or len(chunks) % log_stride == 0:
+                logging.info(
+                    "[stream][turn %d] chunk %03d: %r",
+                    turn_index,
+                    len(chunks),
+                    text_delta,
+                )
 
         response = engine.run_generate(
             prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=stream_callback
