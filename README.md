@@ -143,6 +143,10 @@ python one_click_bench.py --max-new-tokens 128
 ```
 To stream via HF baseline on the server, set `mode="hf"` in the request body.
 
+Multi-device CUDA (round robin):
+- Enabled by default when multiple CUDA GPUs exist (`ENABLE_MULTI_DEVICE=0` to force single device).
+- The server will instantiate one engine per GPU and round-robin requests across them, warming each on startup.
+
 ### Learning-friendly logs
 
 The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Each generation prints:

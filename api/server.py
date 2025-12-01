@@ -17,8 +17,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.model_backend import ModelBackend
-from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
+from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
+from multi_device import EnginePool
 from optimizations import warmup_engine
 
 logging.basicConfig(
@@ -29,8 +30,14 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="sglang-mini")
 
-backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
-engine = SGLangMiniEngine(backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT)
+pool = EnginePool(
+    ModelBackend=ModelBackend,
+    SGLangMiniEngine=SGLangMiniEngine,
+    model_name=MODEL_NAME,
+    max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT,
+    compile_model=os.getenv("COMPILE_MODEL", "0") == "1",
+)
+backend = pool.primary_backend
 STREAM_LOG_STRIDE = max(1, int(os.getenv("SERVER_STREAM_LOG_STRIDE", "32")))
 
 
@@ -38,7 +45,7 @@ STREAM_LOG_STRIDE = max(1, int(os.getenv("SERVER_STREAM_LOG_STRIDE", "32")))
 def _warm_server() -> None:
     warm_tokens = min(16, MAX_NEW_TOKENS_DEFAULT)
     logger.info("Server warmup starting | tokens=%d model=%s", warm_tokens, MODEL_NAME)
-    warmup_engine(engine, max_new_tokens=warm_tokens)
+    pool.warm(warm_tokens)
     logger.info("Server warmup done")
 
 
@@ -91,6 +98,7 @@ def generate(request: GenerateRequest):
                     )
 
         def run_engine() -> None:
+            engine = pool.pick()
             if mode == "sglang":
                 engine.run_generate(
                     prompt=request.prompt,
@@ -98,8 +106,8 @@ def generate(request: GenerateRequest):
                     stream_callback=stream_callback,
                 )
             else:
-                prompt_ids = backend.tokenize(request.prompt)
-                backend.generate_streaming_baseline(
+                prompt_ids = engine.backend.tokenize(request.prompt)
+                engine.backend.generate_streaming_baseline(
                     prompt_ids=prompt_ids,
                     max_new_tokens=request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT,
                     stream_callback=stream_callback,

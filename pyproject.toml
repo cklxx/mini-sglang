@@ -20,4 +20,4 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["api", "backend", "engine"]
-py-modules = ["config", "benchmark", "cli_demo", "one_click_compare", "smoke_test", "optimizations", "server_benchmark", "one_click_bench"]
+py-modules = ["config", "benchmark", "cli_demo", "one_click_compare", "smoke_test", "optimizations", "server_benchmark", "one_click_bench", "multi_device"]
