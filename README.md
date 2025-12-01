@@ -137,6 +137,11 @@ Benchmark the server path (TTFB + throughput):
 python server_benchmark.py --max-new-tokens 128
 ```
 
+One-click bench (sglang vs HF streaming vs HTTP server):
+```bash
+python one_click_bench.py --max-new-tokens 128
+```
+
 ### Learning-friendly logs
 
 The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Each generation prints:
