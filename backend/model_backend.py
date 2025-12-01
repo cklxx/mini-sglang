@@ -7,10 +7,13 @@ device/KV details from the engine.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from typing import Any, List, Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 
 logger = logging.getLogger(__name__)
@@ -146,3 +149,51 @@ class ModelBackend:
             self.decode_tokens(generated_only[:5]),
         )
         return generated_only
+
+    def generate_streaming_baseline(
+        self, prompt_ids: List[int], max_new_tokens: int, log_stride: int = 32
+    ) -> Tuple[str, float]:
+        """Stream tokens using HF's TextIteratorStreamer as a non-sglang baseline."""
+
+        input_ids = torch.tensor(prompt_ids, device=self.device).unsqueeze(0)
+        attention_mask = torch.ones_like(input_ids)
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
+        log_stride = max(1, int(os.getenv("BASELINE_STREAM_LOG_STRIDE", str(log_stride))))
+
+        def _generate() -> None:
+            with torch.no_grad():
+                self.model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    use_cache=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.eos_token_id,
+                    streamer=streamer,
+                )
+
+        start = time.perf_counter()
+        thread = threading.Thread(target=_generate)
+        thread.start()
+
+        chunks: list[str] = []
+        for idx, token_text in enumerate(streamer, 1):
+            chunks.append(token_text)
+            if idx == 1 or idx % log_stride == 0:
+                logger.info(
+                    "[hf-stream] chunk %03d: %r (log_stride=%d)", idx, token_text, log_stride
+                )
+
+        thread.join()
+        duration = time.perf_counter() - start
+        full_text = "".join(chunks)
+        logger.info(
+            "HF streaming baseline complete | chunks=%d duration=%.3fs tokens=%d",
+            len(chunks),
+            duration,
+            len(self.tokenize(full_text)),
+        )
+        return full_text, duration

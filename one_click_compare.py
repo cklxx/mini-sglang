@@ -264,20 +264,16 @@ def run_streaming_chat(
     return history, total_duration
 
 
-def run_traditional(
+def run_baseline_streaming(
     backend: Any, prompt: str, max_new_tokens: int
 ) -> Tuple[str, float]:
     prompt_ids = backend.tokenize(prompt)
-    start = time.perf_counter()
-    generated_ids = backend.generate_greedy(
+    return backend.generate_streaming_baseline(
         prompt_ids=prompt_ids, max_new_tokens=max_new_tokens
     )
-    text = backend.decode_tokens(generated_ids)
-    duration = time.perf_counter() - start
-    return text, duration
 
 
-def run_traditional_chat(
+def run_baseline_streaming_chat(
     *, backend: Any, user_turns: Sequence[str], max_new_tokens: int
 ) -> Tuple[list[tuple[str, str]], float]:
     history: list[tuple[str, str]] = []
@@ -286,12 +282,10 @@ def run_traditional_chat(
     for user_turn in user_turns:
         prompt = build_chat_prompt(history, user_turn)
         prompt_ids = backend.tokenize(prompt)
-        start = time.perf_counter()
-        generated_ids = backend.generate_greedy(
+        response, duration = backend.generate_streaming_baseline(
             prompt_ids=prompt_ids, max_new_tokens=max_new_tokens
         )
-        response = backend.decode_tokens(generated_ids)
-        total_duration += time.perf_counter() - start
+        total_duration += duration
         history.append((user_turn, response))
 
     return history, total_duration
@@ -403,12 +397,12 @@ def run_benchmark_suite(
                 }
             )
 
-            logging.info("=== %s | Traditional generate (chat) ===", label)
-            greedy_history, greedy_duration = run_traditional_chat(
+            logging.info("=== %s | Baseline HF streaming (chat) ===", label)
+            greedy_history, greedy_duration = run_baseline_streaming_chat(
                 backend=backend, user_turns=user_turns, max_new_tokens=max_new_tokens
             )
             summarize_chat(
-                mode=f"{label} | Traditional generate",
+                mode=f"{label} | Baseline HF streaming",
                 history=greedy_history,
                 duration=greedy_duration,
                 backend=backend,
@@ -417,7 +411,7 @@ def run_benchmark_suite(
             rows.append(
                 {
                     "scenario": label,
-                    "mode": "Traditional",
+                    "mode": "Baseline",
                     "tokens": greedy_tokens,
                     "duration": greedy_duration,
                     "throughput": greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0,
@@ -446,12 +440,12 @@ def run_benchmark_suite(
                 }
             )
 
-            logging.info("=== %s | Traditional generate ===", label)
-            greedy_text, greedy_duration = run_traditional(
+            logging.info("=== %s | Baseline HF streaming ===", label)
+            greedy_text, greedy_duration = run_baseline_streaming(
                 backend=backend, prompt=prompt, max_new_tokens=max_new_tokens
             )
             summarize(
-                mode=f"{label} | Traditional generate",
+                mode=f"{label} | Baseline HF streaming",
                 text=greedy_text,
                 duration=greedy_duration,
                 backend=backend,
@@ -460,7 +454,7 @@ def run_benchmark_suite(
             rows.append(
                 {
                     "scenario": label,
-                    "mode": "Traditional",
+                    "mode": "Baseline",
                     "tokens": greedy_tokens,
                     "duration": greedy_duration,
                     "throughput": greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0,
@@ -472,7 +466,7 @@ def run_benchmark_suite(
         label = scenario["label"]
         stream_row = next(r for r in rows if r["scenario"] == label and r["mode"] == "Streaming")
         greedy_row = next(
-            r for r in rows if r["scenario"] == label and r["mode"] == "Traditional"
+            r for r in rows if r["scenario"] == label and r["mode"] == "Baseline"
         )
         speedup = (
             stream_row["throughput"] / greedy_row["throughput"]
@@ -549,12 +543,15 @@ def main() -> None:
             mode="Streaming", history=stream_history, duration=stream_duration, backend=backend
         )
 
-        logging.info("=== Traditional multi-turn generate() ===")
-        greedy_history, greedy_duration = run_traditional_chat(
+        logging.info("=== Baseline HF streaming (multi-turn) ===")
+        greedy_history, greedy_duration = run_baseline_streaming_chat(
             backend=backend, user_turns=user_turns, max_new_tokens=token_budget
         )
         summarize_chat(
-            mode="Traditional generate", history=greedy_history, duration=greedy_duration, backend=backend
+            mode="Baseline HF streaming",
+            history=greedy_history,
+            duration=greedy_duration,
+            backend=backend,
         )
         stream_tokens = len(backend.tokenize(" ".join(bot for _, bot in stream_history)))
         greedy_tokens = len(backend.tokenize(" ".join(bot for _, bot in greedy_history)))
@@ -576,12 +573,15 @@ def main() -> None:
             mode="Streaming", text=stream_text, duration=stream_duration, backend=backend
         )
 
-        logging.info("=== Traditional single-call generate() ===")
-        greedy_text, greedy_duration = run_traditional(
+        logging.info("=== Baseline HF streaming (single prompt) ===")
+        greedy_text, greedy_duration = run_baseline_streaming(
             backend=backend, prompt=prompt, max_new_tokens=token_budget
         )
         summarize(
-            mode="Traditional generate", text=greedy_text, duration=greedy_duration, backend=backend
+            mode="Baseline HF streaming",
+            text=greedy_text,
+            duration=greedy_duration,
+            backend=backend,
         )
         stream_tokens = len(backend.tokenize(stream_text))
         greedy_tokens = len(backend.tokenize(greedy_text))
