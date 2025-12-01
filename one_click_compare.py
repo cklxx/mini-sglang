@@ -2,7 +2,8 @@
 
 This script is the **all-in-one, teaching-friendly** entrypoint:
 - Auto-installs dependencies via `uv pip` when available (falls back to `pip`).
-- Defaults to the tiniest public text model so the first run is quick.
+- Defaults to a modern, lightweight instruct model so the first run has decent
+  quality without a large GPU.
 - Prints readable logs that map each step back to sglang's API / Engine /
   Backend layering.
 
@@ -27,7 +28,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-DEFAULT_TINY_MODEL = "sshleifer/tiny-gpt2"
+# Default to a recent, lightweight instruct model so quality is decent without
+# requiring a large GPU.
+DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+BENCHMARK_SHORT_PROMPT = (
+    "In four bullet points, explain how streaming token generation reduces perceived"
+    " latency and improves user trust in a chat UI."
+)
+BENCHMARK_LONG_PROMPT = """You are preparing a system design update for a latency-sensitive LLM chat service.
+Write a concise summary (<=120 words) plus two risks and two next steps.
+Context:
+- We serve 50k RPM with a p95 SLA of 1.5s for user-visible tokens.
+- We are replacing one-shot generate with streaming prefill+decode to cut TTFB.
+- Clients show typing indicators and rely on early tokens to keep users engaged.
+- Infra: Apple M-series laptops for demos, CUDA for staging and load tests.
+- Batching helped throughput but raised TTFB under bursty traffic.
+- Metrics: TTFB dropped from 900ms to 150ms in A/B when streaming; tail latency improved modestly.
+- Content quality must stay consistent between streaming and batch output."""
+BENCHMARK_TURNS = [
+    "Draft a two-sentence update about migrating from batched generate to streaming decode for an LLM chat service.",
+    "Rewrite the update as three crisp numbered bullets with a latency metric placeholder.",
+]
 REQUIREMENTS_PATH = Path(__file__).resolve().parent / "requirements.txt"
 
 
@@ -46,7 +67,7 @@ def ensure_dependencies() -> None:
     """
 
     needed = []
-    for pkg in ("torch", "transformers", "fastapi", "uvicorn"):
+    for pkg in ("torch", "transformers", "fastapi", "uvicorn", "sentencepiece"):
         if importlib.util.find_spec(pkg) is None:
             needed.append(pkg)
     if not needed:
@@ -122,7 +143,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "prompt",
         nargs="*",
-        default=["Hello from mini-sglang"],
+        default=[
+            "List concrete reasons streaming token generation improves latency and UX for real-time chat assistants."
+        ],
         help=(
             "Prompt(s) to feed the model. Provide multiple values with --multi-turn "
             "to simulate a chat benchmark."
@@ -132,6 +155,11 @@ def parse_args() -> argparse.Namespace:
         "--multi-turn",
         action="store_true",
         help="Treat the prompts as sequential user turns for a chat benchmark",
+    )
+    parser.add_argument(
+        "--benchmark-suite",
+        action="store_true",
+        help="Run a preset short + long benchmark and print a throughput comparison table",
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -145,8 +173,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Override model name. Defaults to MODEL_NAME env or a tiny text model"
-            " for fastest first run."
+            "Override model name. Defaults to MODEL_NAME env or a modern small instruct model."
         ),
     )
     parser.add_argument(
@@ -304,6 +331,141 @@ def summarize_chat(
     print(f"\n{mode} last reply preview: {last_reply[:120]!r}\n")
 
 
+def run_benchmark_suite(
+    *, engine: Any, backend: Any, max_new_tokens: int
+) -> None:
+    """Run short + long prompts (and a refinement turn) and print a speed table."""
+
+    scenarios = [
+        {
+            "label": "Short instruction",
+            "multi_turn": False,
+            "payload": BENCHMARK_SHORT_PROMPT,
+        },
+        {
+            "label": "Long context summarization",
+            "multi_turn": False,
+            "payload": BENCHMARK_LONG_PROMPT,
+        },
+        {
+            "label": "Two-turn refinement",
+            "multi_turn": True,
+            "payload": BENCHMARK_TURNS,
+        },
+    ]
+
+    rows: list[dict[str, Any]] = []
+
+    for scenario in scenarios:
+        label = scenario["label"]
+        if scenario["multi_turn"]:
+            user_turns = scenario["payload"]
+            logging.info("=== %s | Streaming (chat) ===", label)
+            stream_history, stream_duration = run_streaming_chat(
+                engine=engine, user_turns=user_turns, max_new_tokens=max_new_tokens
+            )
+            summarize_chat(
+                mode=f"{label} | Streaming",
+                history=stream_history,
+                duration=stream_duration,
+                backend=backend,
+            )
+            stream_tokens = len(backend.tokenize(" ".join(r for _, r in stream_history)))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Streaming",
+                    "tokens": stream_tokens,
+                    "duration": stream_duration,
+                    "throughput": stream_tokens / stream_duration if stream_duration > 0 else 0.0,
+                }
+            )
+
+            logging.info("=== %s | Traditional generate (chat) ===", label)
+            greedy_history, greedy_duration = run_traditional_chat(
+                backend=backend, user_turns=user_turns, max_new_tokens=max_new_tokens
+            )
+            summarize_chat(
+                mode=f"{label} | Traditional generate",
+                history=greedy_history,
+                duration=greedy_duration,
+                backend=backend,
+            )
+            greedy_tokens = len(backend.tokenize(" ".join(r for _, r in greedy_history)))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Traditional",
+                    "tokens": greedy_tokens,
+                    "duration": greedy_duration,
+                    "throughput": greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0,
+                }
+            )
+        else:
+            prompt = scenario["payload"]
+            logging.info("=== %s | Streaming ===", label)
+            stream_text, stream_duration = run_streaming(
+                engine=engine, prompt=prompt, max_new_tokens=max_new_tokens
+            )
+            summarize(
+                mode=f"{label} | Streaming",
+                text=stream_text,
+                duration=stream_duration,
+                backend=backend,
+            )
+            stream_tokens = len(backend.tokenize(stream_text))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Streaming",
+                    "tokens": stream_tokens,
+                    "duration": stream_duration,
+                    "throughput": stream_tokens / stream_duration if stream_duration > 0 else 0.0,
+                }
+            )
+
+            logging.info("=== %s | Traditional generate ===", label)
+            greedy_text, greedy_duration = run_traditional(
+                backend=backend, prompt=prompt, max_new_tokens=max_new_tokens
+            )
+            summarize(
+                mode=f"{label} | Traditional generate",
+                text=greedy_text,
+                duration=greedy_duration,
+                backend=backend,
+            )
+            greedy_tokens = len(backend.tokenize(greedy_text))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Traditional",
+                    "tokens": greedy_tokens,
+                    "duration": greedy_duration,
+                    "throughput": greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0,
+                }
+            )
+
+    print("\nBenchmark comparison (generated tokens only):")
+    for scenario in scenarios:
+        label = scenario["label"]
+        stream_row = next(r for r in rows if r["scenario"] == label and r["mode"] == "Streaming")
+        greedy_row = next(
+            r for r in rows if r["scenario"] == label and r["mode"] == "Traditional"
+        )
+        speedup = (
+            stream_row["throughput"] / greedy_row["throughput"]
+            if greedy_row["throughput"] > 0
+            else 0.0
+        )
+        delta = greedy_row["duration"] - stream_row["duration"]
+        print(
+            f"- {label}: streaming {stream_row['throughput']:.2f} tok/s vs"
+            f" traditional {greedy_row['throughput']:.2f} tok/s"
+            f" (x{speedup:.2f} throughput, Δ{delta:+.3f}s duration)"
+        )
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
@@ -326,11 +488,8 @@ def main() -> None:
         args.model
         or os.environ.get("MODEL_NAME")
         or MODEL_NAME
-        or DEFAULT_TINY_MODEL
+        or DEFAULT_MODEL
     )
-    if model_name == MODEL_NAME and MODEL_NAME == "gpt2":
-        # Prefer the tiny model for a faster teaching demo when MODEL_NAME isn't set.
-        model_name = DEFAULT_TINY_MODEL
     os.environ.setdefault("MODEL_NAME", model_name)
 
     backend = build_backend(model_name, ModelBackend, get_device)
@@ -338,8 +497,23 @@ def main() -> None:
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )
 
-    user_turns = args.prompt or ["Hello from mini-sglang"]
     token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
+    user_turns = args.prompt or [
+        "List concrete reasons streaming token generation improves latency and UX for real-time chat assistants."
+    ]
+
+    if args.benchmark_suite:
+        logging.info(
+            "Running benchmark suite with model=%s max_new_tokens=%d",
+            model_name,
+            token_budget,
+        )
+        run_benchmark_suite(
+            engine=engine, backend=backend, max_new_tokens=token_budget
+        )
+        print("Done. Use the logs above to trace each benchmark.")
+        return
+
     logging.info(
         "Starting comparison with max_new_tokens=%d (prompts=%r)",
         token_budget,

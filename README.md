@@ -2,12 +2,12 @@
 
 A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmark comparisons now contrast streaming mini-sglang against a plain Hugging Face `generate()` baseline (non-sglang) rather than exposing a non-streaming HTTP mode.
 
-### One-line quickstart (auto installs + tiny model)
+### One-line quickstart (auto installs + modern small model)
 
 > Prefer `uv`? A `pyproject.toml` is now committed so you can run `uv sync` to
 > install deps from the project metadata instead of the requirements file.
 
-If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download the tiniest public text model, and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
+If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download a modern small instruct model, and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
 
 ```bash
 uv run python one_click_compare.py "Hello mini-sglang"
@@ -66,21 +66,21 @@ python cli_demo.py
 python cli_demo.py --multi-turn
 ```
 
-End-to-end smoke test with a tiny model to keep the first download small (streaming only):
+End-to-end smoke test with the default model (streaming only):
 ```bash
-MODEL_NAME=sshleifer/tiny-gpt2 python smoke_test.py --max-new-tokens 16 "Hello from mini-sglang"
+python smoke_test.py --max-new-tokens 32 "Hello from mini-sglang"
 ```
 The streaming run exercises the full prefill + decode path and streams tokens to stdout. For non-sglang baselines, use the comparison or benchmark scripts below.
 
 Run a quick benchmark comparing streaming vs. vanilla Hugging Face `generate()` (non-sglang baseline):
 ```bash
-MODEL_NAME=sshleifer/tiny-gpt2 python benchmark.py --max-new-tokens 16 "Benchmarking mini-sglang"
+python benchmark.py --max-new-tokens 64 "Benchmarking mini-sglang"
 ```
 The benchmark prints token counts, wall-clock duration, and throughput for both modes so you can evaluate normal inference speed versus the step-by-step streaming loop.
 
-### One-click side-by-side script (auto-downloads tiny model)
+### One-click side-by-side script (auto-downloads small instruct model)
 
-If you just want a single command that initializes everything, downloads a tiny text model, and prints streaming vs. traditional outputs with readable logs, run the quickstart above or:
+If you just want a single command that initializes everything, downloads a small instruct model, and prints streaming vs. traditional outputs with readable logs, run the quickstart above or:
 
 ```bash
 python one_click_compare.py "Hello mini-sglang"
@@ -88,11 +88,13 @@ python one_click_compare.py "Hello mini-sglang"
 
 Flags:
 
-* `--max-new-tokens`: token budget for both modes
-* `--model`: override the default tiny model
+* `--max-new-tokens`: token budget for both modes (defaults to 128)
+* `--model`: override the default modern small model
+* `--multi-turn`: treat multiple prompts as sequential chat turns
+* `--benchmark-suite`: run preset short + long prompts and print a comparison table
 * `--no-bootstrap`: skip auto-install if deps are pre-installed
 
-The script prefers the smallest text model (`sshleifer/tiny-gpt2`) unless you set `MODEL_NAME` or pass `--model`. Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
+Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
 
 Start HTTP server:
 ```bash
@@ -127,4 +129,4 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `gpt2`).
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`).
