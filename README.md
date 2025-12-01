@@ -19,17 +19,27 @@ No UV? The same script will auto-install uv (unless you set `AUTO_INSTALL_UV=0`)
 python one_click_compare.py "Hello mini-sglang"
 ```
 
+To benchmark a short chat with multiple user turns (history preserved for both
+streaming and vanilla baselines), pass several prompts plus `--multi-turn`:
+
+```bash
+uv run python one_click_compare.py --multi-turn \
+  "Hello mini-sglang" \
+  "What's different about streaming?" \
+  "Give me a TL;DR"
+```
+
 Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
 
 ## Project layout
 ```
 requirements.txt
-config.py           # (sglang global config analogue) model choice + device selection
-backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
-engine/engine.py    # (sglang engine analogue) prefill + decode orchestration
-api/server.py       # (sglang API analogue) FastAPI server exposing POST /generate
-cli_demo.py         # Minimal client to stream tokens in a terminal
-benchmark.py        # Streaming vs vanilla generate() comparison helper
+config.py           # (sglang global config analogue; source file: [global_config.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/global_config.py)) model choice + device selection
+backend/model_backend.py  # (sglang backend analogue; source file: [model_runner.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/model_executor/model_runner.py)) model + tokenizer + KV cache helpers
+engine/engine.py    # (sglang engine analogue; source file: [entrypoints/engine.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/engine.py)) prefill + decode orchestration
+api/server.py       # (sglang API analogue; source file: [entrypoints/http_server.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py)) FastAPI server exposing POST /generate
+cli_demo.py         # Minimal client to stream tokens in a terminal (sglang CLI source: [cli/generate.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/cli/generate.py))
+benchmark.py        # Streaming vs vanilla generate() comparison helper (benchmarks in [bench_serving.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/bench_serving.py))
 one_click_compare.py  # All-in-one bootstrap + streaming vs traditional demo
 ```
 
@@ -51,6 +61,9 @@ The one-click script mirrors this behavior: on Linux it defaults to the CPU inde
 CLI demo (streaming-only):
 ```bash
 python cli_demo.py
+
+# Multi-turn chat mode (keeps prior turns in context)
+python cli_demo.py --multi-turn
 ```
 
 End-to-end smoke test with a tiny model to keep the first download small (streaming only):
