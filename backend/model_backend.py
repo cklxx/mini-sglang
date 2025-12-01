@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, List, Tuple
+from typing import Any, Callable, List, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
