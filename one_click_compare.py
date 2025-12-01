@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
+from optimizations import warmup_engine
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -180,6 +182,27 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip dependency auto-install (for pre-provisioned environments)",
     )
+    parser.add_argument(
+        "--compile-model",
+        action="store_true",
+        help="Try torch.compile for extra speed (best effort; falls back on failure)",
+    )
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Skip a short warmup generation to amortize cold start",
+    )
+    parser.add_argument(
+        "--warmup-tokens",
+        type=int,
+        default=8,
+        help="Token budget for the warmup generation (default: 8)",
+    )
+    parser.add_argument(
+        "--no-optimizations",
+        action="store_true",
+        help="Disable torch perf knobs (tf32/matmul precision) and warmup",
+    )
     return parser.parse_args()
 
 
@@ -187,14 +210,16 @@ def parse_args() -> argparse.Namespace:
 # Core comparison helpers (typed loosely to avoid early imports)
 # ---------------------------------------------------------------------------
 
-def build_backend(model_name: str, ModelBackend: Any, get_device: Any) -> Any:
+def build_backend(
+    model_name: str, ModelBackend: Any, get_device: Any, compile_model: bool
+) -> Any:
     device = get_device()
     logging.info(
         "Preparing backend with model=%s on device=%s (auto-download on first run)",
         model_name,
         device,
     )
-    return ModelBackend(model_name=model_name, device=device)
+    return ModelBackend(model_name=model_name, device=device, compile_model=compile_model)
 
 
 def run_streaming(
@@ -503,13 +528,19 @@ def main() -> None:
     )
     os.environ.setdefault("MODEL_NAME", model_name)
 
-    backend = build_backend(model_name, ModelBackend, get_device)
+    backend = build_backend(
+        model_name, ModelBackend, get_device, compile_model=(args.compile_model and not args.no_optimizations)
+    )
     engine = SGLangMiniEngine(
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )
 
     token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
     user_turns = args.prompt
+
+    if not args.no_optimizations and not args.no_warmup:
+        warmup_tokens = max(1, min(args.warmup_tokens, token_budget))
+        warmup_engine(engine, max_new_tokens=warmup_tokens)
 
     if not user_turns:
         logging.info(

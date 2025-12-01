@@ -15,6 +15,8 @@ from typing import Any, List, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
+from optimizations import configure_torch, maybe_compile_model
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,15 @@ logger = logging.getLogger(__name__)
 class ModelBackend:
     """Backend that handles model/tokenizer loading and forward passes."""
 
-    def __init__(self, model_name: str, device: str) -> None:
+    def __init__(self, model_name: str, device: str, compile_model: bool = False) -> None:
+        compile_model = compile_model or os.getenv("COMPILE_MODEL", "0") == "1"
+        configure_torch(device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token is not None:
             # Align pad with EOS so we can build explicit attention masks.
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model = maybe_compile_model(self.model, device=device, enabled=compile_model)
         self.model.to(device)
         self.model.eval()
 

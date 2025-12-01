@@ -93,6 +93,9 @@ Flags:
 * `--max-new-tokens`: token budget for both modes (defaults to 128)
 * `--model`: override the default modern small model
 * `--multi-turn`: treat multiple prompts as sequential chat turns
+* `--compile-model`: try `torch.compile` for extra speed (best effort)
+* `--warmup-tokens` / `--no-warmup`: control a short warmup generation to amortize cold start
+* `--no-optimizations`: disable torch perf knobs and warmup
 * `--no-bootstrap`: skip auto-install if deps are pre-installed
 
 Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
@@ -144,5 +147,5 @@ Comparison: streaming faster by 11.438s with x2.10 throughput
 
 Why sglang-style streaming is faster here:
 - Prefill + decode loop runs in-process with explicit KV reuse and minimal Python overhead between steps.
-- HF streaming baseline re-enters the generator loop and Python callback machinery per token (TextIteratorStreamer), adding per-token overhead.
+- HF streaming baseline re-enters the generator loop and Python callback machinery per token (TextIteratorStreamer), adding per-token overhead even though it also uses KV cache.
 - Both use the same model and device (Apple M1 Pro via MPS); differences are from orchestration, not model quality.
