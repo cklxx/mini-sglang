@@ -157,10 +157,11 @@ class ModelBackend:
         logits = outputs.logits[:, -1, :]
         next_token_id = torch.argmax(logits, dim=-1).item()
         new_kv_cache = outputs.past_key_values
+        next_token_id = int(next_token_id)
         logger.debug(
             "Decode step produced next_token_id=%d (text=%r)",
             next_token_id,
-            self.decode_tokens([int(next_token_id)]),
+            self.decode_tokens([next_token_id]),
         )
         return next_token_id, new_kv_cache
 
