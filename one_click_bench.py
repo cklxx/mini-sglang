@@ -1,28 +1,21 @@
 """One-click benchmark: sglang streaming vs HF streaming vs HTTP server.
 
-This mirrors sglang's bench mode in a minimal way:
-- Uses the in-process engine for sglang streaming (prefill + decode).
-- Uses HF TextIteratorStreamer as the non-sglang streaming baseline.
+This mirrors sglang's bench mode in a minimal way for the HTTP server:
 - Hits the FastAPI server via TestClient to measure TTFB + throughput.
+- Compares sglang engine mode vs HF streaming baseline mode on the server.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import time
-from typing import Any, Tuple
+from typing import Tuple
 
 from fastapi.testclient import TestClient
 
 from api.server import app, backend as server_backend
 from config import MAX_NEW_TOKENS_DEFAULT
-from one_click_compare import (
-    build_backend,
-    ensure_dependencies,
-    load_components,
-    run_baseline_streaming,
-    run_streaming,
-)
+from one_click_compare import ensure_dependencies
 
 
 def run_server_stream(prompt: str, max_new_tokens: int, mode: str) -> Tuple[str, float, float]:
@@ -56,14 +49,8 @@ def run_server_stream(prompt: str, max_new_tokens: int, mode: str) -> Tuple[str,
     return text, ttfb, throughput
 
 
-def summarize(label: str, text: str, duration: float, backend: Any) -> dict[str, Any]:
-    tokens = len(backend.tokenize(text))
-    tp = tokens / duration if duration > 0 else 0.0
-    return {"label": label, "tokens": tokens, "duration": duration, "throughput": tp}
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="One-click benchmark (sglang vs HF baseline vs server)")
+    parser = argparse.ArgumentParser(description="One-click server benchmark (sglang vs HF baseline)")
     parser.add_argument(
         "prompt",
         nargs="?",
@@ -85,38 +72,13 @@ def main() -> None:
     if not args.no_bootstrap:
         ensure_dependencies()
 
-    ModelBackend, SGLangMiniEngine, _, MODEL_NAME, get_device = load_components()
-    backend = build_backend(
-        MODEL_NAME, ModelBackend, get_device, compile_model=False
-    )
-    engine = SGLangMiniEngine(backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT)
-
-    print(f"Running benchmark with model={MODEL_NAME} max_new_tokens={args.max_new_tokens}")
+    print(f"Running server benchmark with max_new_tokens={args.max_new_tokens}")
     print(f"Prompt: {args.prompt!r}\n")
 
-    # Local (engine) benchmarks
-    s_text, s_duration = run_streaming(
-        engine=engine, prompt=args.prompt, max_new_tokens=args.max_new_tokens
-    )
-    s_metrics = summarize("sglang streaming", s_text, s_duration, backend)
-
-    b_text, b_duration = run_baseline_streaming(
-        backend=backend, prompt=args.prompt, max_new_tokens=args.max_new_tokens
-    )
-    b_metrics = summarize("HF streaming baseline", b_text, b_duration, backend)
-
-    print("Local results (engine only):")
-    print(f"- sglang streaming:  throughput={s_metrics['throughput']:.2f} tok/s  duration={s_metrics['duration']:.3f}s")
-    print(f"- HF streaming baseline: throughput={b_metrics['throughput']:.2f} tok/s  duration={b_metrics['duration']:.3f}s")
-    print("\nLocal previews:")
-    print(f"- sglang: {s_text[:120]!r}")
-    print(f"- HF baseline: {b_text[:120]!r}")
-
-    # Server benchmarks (same backend, different modes)
     sv_text, sv_ttfb, sv_tp = run_server_stream(args.prompt, args.max_new_tokens, mode="sglang")
     sv_hf_text, sv_hf_ttfb, sv_hf_tp = run_server_stream(args.prompt, args.max_new_tokens, mode="hf")
 
-    print("\nServer results (FastAPI /generate):")
+    print("Server results (FastAPI /generate):")
     print(f"- HTTP server (sglang): throughput={sv_tp:.2f} tok/s  TTFB={sv_ttfb:.3f}s")
     print(f"- HTTP server (hf baseline): throughput={sv_hf_tp:.2f} tok/s  TTFB={sv_hf_ttfb:.3f}s")
     print("\nServer previews:")
