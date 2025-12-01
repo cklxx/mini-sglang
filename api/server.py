@@ -30,6 +30,7 @@ app = FastAPI(title="sglang-mini")
 
 backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
 engine = SGLangMiniEngine(backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT)
+STREAM_LOG_STRIDE = max(1, int(os.getenv("SERVER_STREAM_LOG_STRIDE", "32")))
 
 
 @app.on_event("startup")
@@ -78,7 +79,15 @@ def generate(request: GenerateRequest):
         def stream_callback(text_delta: str) -> None:
             chunk: Dict[str, Any] = {"text_delta": text_delta}
             queue.put((json.dumps(chunk) + "\n").encode("utf-8"))
-            logger.info("Streamed chunk: %r", chunk)
+            if len(chunk.get("text_delta", "")) > 0:
+                stream_callback.count = getattr(stream_callback, "count", 0) + 1
+                if stream_callback.count <= 2 or stream_callback.count % STREAM_LOG_STRIDE == 0:
+                    logger.info(
+                        "Streamed chunk %03d (mode=%s): %r",
+                        stream_callback.count,
+                        mode,
+                        chunk,
+                    )
 
         def run_engine() -> None:
             if mode == "sglang":
