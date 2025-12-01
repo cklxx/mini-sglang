@@ -141,6 +141,7 @@ One-click bench (sglang vs HF streaming vs HTTP server):
 ```bash
 python one_click_bench.py --max-new-tokens 128
 ```
+To stream via HF baseline on the server, set `mode="hf"` in the request body.
 
 ### Learning-friendly logs
 

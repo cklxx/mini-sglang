@@ -44,6 +44,7 @@ class GenerateRequest(BaseModel):
     prompt: str
     max_new_tokens: Optional[int] = Field(None, ge=1)
     stream: Optional[bool] = True
+    mode: Optional[str] = Field("sglang", description="sglang | hf")
 
 
 @app.post("/generate")
@@ -66,6 +67,10 @@ def generate(request: GenerateRequest):
             ),
         )
 
+    mode = (request.mode or "sglang").lower()
+    if mode not in ("sglang", "hf"):
+        raise HTTPException(status_code=400, detail="mode must be 'sglang' or 'hf'")
+
     def event_stream() -> Generator[bytes, None, None]:
         queue: SimpleQueue[object] = SimpleQueue()
         sentinel = object()
@@ -76,14 +81,24 @@ def generate(request: GenerateRequest):
             logger.info("Streamed chunk: %r", chunk)
 
         def run_engine() -> None:
-            engine.run_generate(
-                prompt=request.prompt,
-                max_new_tokens=request.max_new_tokens,
-                stream_callback=stream_callback,
-            )
+            if mode == "sglang":
+                engine.run_generate(
+                    prompt=request.prompt,
+                    max_new_tokens=request.max_new_tokens,
+                    stream_callback=stream_callback,
+                )
+            else:
+                prompt_ids = backend.tokenize(request.prompt)
+                backend.generate_streaming_baseline(
+                    prompt_ids=prompt_ids,
+                    max_new_tokens=request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT,
+                    stream_callback=stream_callback,
+                )
             queue.put(json.dumps({"event": "done"}).encode("utf-8") + b"\n")
             queue.put(sentinel)
-            logger.info("Generation thread completed for prompt length=%d", len(request.prompt))
+            logger.info(
+                "Generation thread completed for prompt length=%d mode=%s", len(request.prompt), mode
+            )
 
         thread = Thread(target=run_engine, daemon=True)
         thread.start()

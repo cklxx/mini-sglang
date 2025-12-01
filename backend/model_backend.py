@@ -205,7 +205,11 @@ class ModelBackend:
         return generated_only
 
     def generate_streaming_baseline(
-        self, prompt_ids: List[int], max_new_tokens: int, log_stride: int = 32
+        self,
+        prompt_ids: List[int],
+        max_new_tokens: int,
+        log_stride: int = 32,
+        stream_callback: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, float]:
         """Stream tokens using HF's TextIteratorStreamer as a non-sglang baseline."""
 
@@ -239,6 +243,8 @@ class ModelBackend:
 
         chunks: list[str] = []
         for idx, token_text in enumerate(streamer, 1):
+            if stream_callback:
+                stream_callback(token_text)
             chunks.append(token_text)
             if idx == 1 or idx % log_stride == 0:
                 logger.info(
