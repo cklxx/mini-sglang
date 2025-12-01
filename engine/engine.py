@@ -72,6 +72,7 @@ class SGLangMiniEngine:
         state.generated_ids.append(first_token_id)
         state.kv_cache = kv_cache
         text_delta = self.backend.decode_tokens([first_token_id])
+        text_chunks: list[str] = [text_delta]
         logger.info("Prefill emitted token_id=%d text=%r", first_token_id, text_delta)
         stream_callback(text_delta)
 
@@ -104,7 +105,9 @@ class SGLangMiniEngine:
                         state.finished,
                     )
                 stream_callback(text_delta)
+                text_chunks.append(text_delta)
 
-        full_text = self.backend.decode_tokens(state.generated_ids)
+        # We already decoded per-step deltas; join them instead of re-decoding full ids.
+        full_text = "".join(text_chunks)
         logger.info("Generation complete | %d tokens emitted", len(state.generated_ids))
         return full_text
