@@ -191,6 +191,9 @@ class ModelBackend:
                 use_cache=True,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.eos_token_id,
+                top_p=None,
+                top_k=None,
+                temperature=None,
             )
         full_ids: List[int] = outputs[0].tolist()
         generated_only = full_ids[len(prompt_ids) :]
@@ -225,6 +228,9 @@ class ModelBackend:
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.eos_token_id,
                     streamer=streamer,
+                    top_p=None,
+                    top_k=None,
+                    temperature=None,
                 )
 
         start = time.perf_counter()
