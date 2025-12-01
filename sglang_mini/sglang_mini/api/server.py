@@ -1,0 +1,88 @@
+"""FastAPI server exposing a streaming /generate endpoint.
+
+This mirrors sglang's API layer in miniature: a single POST /generate that
+drives the engine and streams tokens back to the caller.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from queue import SimpleQueue
+from threading import Thread
+from typing import Any, Dict, Generator, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from sglang_mini.backend.model_backend import ModelBackend
+from sglang_mini.config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
+from sglang_mini.engine.engine import SGLangMiniEngine
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="sglang-mini")
+
+backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
+engine = SGLangMiniEngine(backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT)
+
+
+class GenerateRequest(BaseModel):
+    prompt: str
+    max_new_tokens: Optional[int] = Field(None, ge=1)
+    stream: Optional[bool] = True
+
+
+@app.post("/generate")
+def generate(request: GenerateRequest):
+    logger.info(
+        "Incoming /generate request | prompt_preview=%r max_new_tokens=%s",
+        request.prompt[:50],
+        request.max_new_tokens,
+    )
+
+    if request.stream is False:
+        logger.info(
+            "Non-streaming HTTP mode is disabled; use benchmark/one-click scripts for baselines",
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "HTTP API is streaming-only. Use benchmark.py or one_click_compare.py "
+                "to compare against vanilla generate()."
+            ),
+        )
+
+    def event_stream() -> Generator[bytes, None, None]:
+        queue: SimpleQueue[object] = SimpleQueue()
+        sentinel = object()
+
+        def stream_callback(text_delta: str) -> None:
+            chunk: Dict[str, Any] = {"text_delta": text_delta}
+            queue.put((json.dumps(chunk) + "\n").encode("utf-8"))
+            logger.info("Streamed chunk: %r", chunk)
+
+        def run_engine() -> None:
+            engine.run_generate(
+                prompt=request.prompt,
+                max_new_tokens=request.max_new_tokens,
+                stream_callback=stream_callback,
+            )
+            queue.put(json.dumps({"event": "done"}).encode("utf-8") + b"\n")
+            queue.put(sentinel)
+            logger.info("Generation thread completed for prompt length=%d", len(request.prompt))
+
+        thread = Thread(target=run_engine, daemon=True)
+        thread.start()
+
+        while True:
+            item = queue.get()
+            if item is sentinel:
+                break
+            yield item  # type: ignore[misc]
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

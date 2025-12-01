@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-sglang"
+version = "0.1.0"
+description = "Minimal streaming-first sglang-inspired stack"
+readme = "README.md"
+authors = [{ name = "mini-sglang" }]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "transformers",
+    "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["sglang_mini"]
