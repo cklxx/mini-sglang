@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
-from sglang_mini.backend.model_backend import ModelBackend
+from backend.model_backend import ModelBackend
 
 
 logger = logging.getLogger(__name__)

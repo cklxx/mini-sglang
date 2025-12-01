@@ -10,39 +10,37 @@ A minimal, streaming-first implementation of an sglang-style text generation sta
 If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download the tiniest public text model, and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
 
 ```bash
-uv run python sglang_mini/one_click_compare.py "Hello mini-sglang"
+uv run python one_click_compare.py "Hello mini-sglang"
 ```
 
 No UV? The same script will auto-install uv (unless you set `AUTO_INSTALL_UV=0`) and fall back to `pip` if needed. You can also skip installation by passing `--no-bootstrap` if your environment is already set up:
 
 ```bash
-python sglang_mini/one_click_compare.py "Hello mini-sglang"
+python one_click_compare.py "Hello mini-sglang"
 ```
 
 Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
 
 ## Project layout
 ```
-sglang_mini/
-  requirements.txt
-  sglang_mini/
-    config.py           # (sglang global config analogue) model choice + device selection
-    backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
-    engine/engine.py    # (sglang engine analogue) prefill + decode orchestration
-    api/server.py       # (sglang API analogue) FastAPI server exposing POST /generate
-  cli_demo.py           # Minimal client to stream tokens in a terminal
-  benchmark.py          # Streaming vs vanilla generate() comparison helper
-  one_click_compare.py  # All-in-one bootstrap + streaming vs traditional demo
+requirements.txt
+config.py           # (sglang global config analogue) model choice + device selection
+backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
+engine/engine.py    # (sglang engine analogue) prefill + decode orchestration
+api/server.py       # (sglang API analogue) FastAPI server exposing POST /generate
+cli_demo.py         # Minimal client to stream tokens in a terminal
+benchmark.py        # Streaming vs vanilla generate() comparison helper
+one_click_compare.py  # All-in-one bootstrap + streaming vs traditional demo
 ```
 
 ## Usage
 Install dependencies (CPU/MPS/CUDA torch resolved by pip environment). To avoid downloading large GPU wheels on CPU-only machines you can point pip at the CPU index (Linux) or rely on the default Mac wheels:
 ```bash
 # CPU-only install
-pip install --index-url https://download.pytorch.org/whl/cpu -r sglang_mini/requirements.txt
+pip install --index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 
 # Or use the default index (may pull CUDA wheels on Linux)
-pip install -r sglang_mini/requirements.txt
+pip install -r requirements.txt
 
 # Or install via uv using the committed pyproject
 uv sync
@@ -52,18 +50,18 @@ The one-click script mirrors this behavior: on Linux it defaults to the CPU inde
 
 CLI demo (streaming-only):
 ```bash
-python sglang_mini/cli_demo.py
+python cli_demo.py
 ```
 
 End-to-end smoke test with a tiny model to keep the first download small (streaming only):
 ```bash
-MODEL_NAME=sshleifer/tiny-gpt2 python sglang_mini/smoke_test.py --max-new-tokens 16 "Hello from mini-sglang"
+MODEL_NAME=sshleifer/tiny-gpt2 python smoke_test.py --max-new-tokens 16 "Hello from mini-sglang"
 ```
 The streaming run exercises the full prefill + decode path and streams tokens to stdout. For non-sglang baselines, use the comparison or benchmark scripts below.
 
 Run a quick benchmark comparing streaming vs. vanilla Hugging Face `generate()` (non-sglang baseline):
 ```bash
-MODEL_NAME=sshleifer/tiny-gpt2 python sglang_mini/benchmark.py --max-new-tokens 16 "Benchmarking mini-sglang"
+MODEL_NAME=sshleifer/tiny-gpt2 python benchmark.py --max-new-tokens 16 "Benchmarking mini-sglang"
 ```
 The benchmark prints token counts, wall-clock duration, and throughput for both modes so you can evaluate normal inference speed versus the step-by-step streaming loop.
 
@@ -72,7 +70,7 @@ The benchmark prints token counts, wall-clock duration, and throughput for both 
 If you just want a single command that initializes everything, downloads a tiny text model, and prints streaming vs. traditional outputs with readable logs, run the quickstart above or:
 
 ```bash
-python sglang_mini/one_click_compare.py "Hello mini-sglang"
+python one_click_compare.py "Hello mini-sglang"
 ```
 
 Flags:
@@ -85,7 +83,7 @@ The script prefers the smallest text model (`sshleifer/tiny-gpt2`) unless you se
 
 Start HTTP server:
 ```bash
-uvicorn sglang_mini.api.server:app --reload --port 8000
+uvicorn api.server:app --reload --port 8000
 ```
 
 Send a streaming request (SSE-style text chunks):
