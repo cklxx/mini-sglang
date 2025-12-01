@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from queue import SimpleQueue
 from threading import Thread
 from typing import Any, Dict, Generator, Optional
