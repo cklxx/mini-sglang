@@ -333,6 +333,24 @@ def summarize_chat(
     print(f"\n{mode} last reply preview: {last_reply[:120]!r}\n")
 
 
+def print_comparison_row(
+    *,
+    label: str,
+    stream_tokens: int,
+    stream_duration: float,
+    greedy_tokens: int,
+    greedy_duration: float,
+) -> None:
+    stream_tp = stream_tokens / stream_duration if stream_duration > 0 else 0.0
+    greedy_tp = greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0
+    speedup = stream_tp / greedy_tp if greedy_tp > 0 else 0.0
+    delta = greedy_duration - stream_duration
+    print(
+        f"- {label}: streaming {stream_tp:.2f} tok/s vs traditional {greedy_tp:.2f} tok/s"
+        f" (x{speedup:.2f} throughput, Δ{delta:+.3f}s duration)"
+    )
+
+
 def run_benchmark_suite(
     *, engine: Any, backend: Any, max_new_tokens: int
 ) -> None:
@@ -536,6 +554,16 @@ def main() -> None:
         summarize_chat(
             mode="Traditional generate", history=greedy_history, duration=greedy_duration, backend=backend
         )
+        stream_tokens = len(backend.tokenize(" ".join(bot for _, bot in stream_history)))
+        greedy_tokens = len(backend.tokenize(" ".join(bot for _, bot in greedy_history)))
+        print("\nComparison summary (chat):")
+        print_comparison_row(
+            label="Multi-turn chat",
+            stream_tokens=stream_tokens,
+            stream_duration=stream_duration,
+            greedy_tokens=greedy_tokens,
+            greedy_duration=greedy_duration,
+        )
     else:
         prompt = user_turns[0]
         logging.info("=== Streaming via mini-sglang (prefill + decode) ===")
@@ -552,6 +580,16 @@ def main() -> None:
         )
         summarize(
             mode="Traditional generate", text=greedy_text, duration=greedy_duration, backend=backend
+        )
+        stream_tokens = len(backend.tokenize(stream_text))
+        greedy_tokens = len(backend.tokenize(greedy_text))
+        print("\nComparison summary:")
+        print_comparison_row(
+            label="Single prompt",
+            stream_tokens=stream_tokens,
+            stream_duration=stream_duration,
+            greedy_tokens=greedy_tokens,
+            greedy_duration=greedy_duration,
         )
 
     print("Done. Use the logs above to trace each step.")
