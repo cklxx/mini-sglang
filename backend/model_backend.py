@@ -195,7 +195,7 @@ class ModelBackend:
                 top_k=None,
                 temperature=None,
             )
-        full_ids: List[int] = outputs[0].tolist()
+        full_ids: List[int] = [int(x) for x in outputs[0].tolist()]
         generated_only = full_ids[len(prompt_ids) :]
         logger.info(
             "generate_greedy produced %d tokens (text preview=%r)",
