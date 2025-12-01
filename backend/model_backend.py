@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, List, Tuple
 
 import torch
@@ -37,6 +38,11 @@ class ModelBackend:
         self.model.eval()
 
         self.device = device
+        # Simple LRU caches for tokenization and prefill KV reuse.
+        self.token_cache_size = int(os.getenv("TOKEN_CACHE_SIZE", "32"))
+        self.prefill_cache_size = int(os.getenv("PREFILL_CACHE_SIZE", "8"))
+        self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
+        self.prefill_cache: OrderedDict[str, Tuple[int, Any]] = OrderedDict()
         self.decode_buffer_enabled = os.getenv("DECODE_BUFFER", "1") != "0"
         self._decode_buffer = torch.empty(
             (1, 1), device=self.device, dtype=torch.long
@@ -69,7 +75,17 @@ class ModelBackend:
 
     def tokenize(self, prompt: str) -> List[int]:
         """Convert prompt text to token ids."""
+        if self.token_cache_size > 0 and prompt in self.token_cache:
+            token_ids = self.token_cache.pop(prompt)
+            self.token_cache[prompt] = token_ids  # mark as most recently used
+            logger.debug("Tokenized prompt (cache hit) into %d tokens", len(token_ids))
+            return token_ids
+
         token_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        if self.token_cache_size > 0:
+            self.token_cache[prompt] = token_ids
+            if len(self.token_cache) > self.token_cache_size:
+                self.token_cache.popitem(last=False)
         logger.debug("Tokenized prompt into %d tokens", len(token_ids))
         return token_ids
 
@@ -89,12 +105,31 @@ class ModelBackend:
             input_ids.shape[1],
             self.device,
         )
+
+        prompt_key = None
+        if self.prefill_cache_size > 0:
+            prompt_key = ",".join(str(i) for i in prompt_ids)
+            if prompt_key in self.prefill_cache:
+                first_token_id, cached_kv = self.prefill_cache.pop(prompt_key)
+                self.prefill_cache[prompt_key] = (first_token_id, cached_kv)
+                logger.info(
+                    "Prefill cache hit for seq_len=%d (first_token_id=%d)",
+                    input_ids.shape[1],
+                    first_token_id,
+                )
+                return first_token_id, cached_kv
+
         auto_ctx, inf_ctx = inference_context(self.device)
         with auto_ctx, inf_ctx:
             outputs = self.model(input_ids=input_ids, use_cache=True)
         logits = outputs.logits[:, -1, :]
         first_token_id = torch.argmax(logits, dim=-1).item()
         kv_cache = outputs.past_key_values
+
+        if prompt_key is not None:
+            self.prefill_cache[prompt_key] = (first_token_id, kv_cache)
+            if len(self.prefill_cache) > self.prefill_cache_size:
+                self.prefill_cache.popitem(last=False)
         logger.info(
             "Prefill produced first_token_id=%d (text=%r)",
             first_token_id,

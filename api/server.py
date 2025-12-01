@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from backend.model_backend import ModelBackend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
+from optimizations import warmup_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,14 @@ app = FastAPI(title="sglang-mini")
 
 backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
 engine = SGLangMiniEngine(backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT)
+
+
+@app.on_event("startup")
+def _warm_server() -> None:
+    warm_tokens = min(16, MAX_NEW_TOKENS_DEFAULT)
+    logger.info("Server warmup starting | tokens=%d model=%s", warm_tokens, MODEL_NAME)
+    warmup_engine(engine, max_new_tokens=warm_tokens)
+    logger.info("Server warmup done")
 
 
 class GenerateRequest(BaseModel):

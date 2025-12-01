@@ -105,6 +105,8 @@ Performance knobs (inspired by sglang defaults):
 - Autocast + inference_mode around forward/generate to cut Python/dispatch overhead.
 - One-shot warmup run before benchmarks (skip with `--no-warmup` or `--no-optimizations`).
 - Decode input buffer reuse to avoid per-step tensor allocs (`DECODE_BUFFER=0` to disable).
+- Token and prefill KV LRU caches to skip repeat tokenization and prefill (`TOKEN_CACHE_SIZE`, `PREFILL_CACHE_SIZE`).
+- Server startup warmup to amortize first-request latency.
 
 Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
 
@@ -129,6 +131,11 @@ Responses are JSON lines streamed chunk-by-chunk, e.g.:
 ```
 
 The HTTP API is streaming-only; for non-sglang baselines use `benchmark.py` or `one_click_compare.py`.
+
+Benchmark the server path (TTFB + throughput):
+```bash
+python server_benchmark.py --max-new-tokens 128
+```
 
 ### Learning-friendly logs
 
