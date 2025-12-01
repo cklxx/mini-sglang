@@ -345,9 +345,11 @@ def print_comparison_row(
     greedy_tp = greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0
     speedup = stream_tp / greedy_tp if greedy_tp > 0 else 0.0
     delta = greedy_duration - stream_duration
+    faster = "streaming faster" if delta > 0 else "traditional faster"
     print(
-        f"- {label}: streaming {stream_tp:.2f} tok/s vs traditional {greedy_tp:.2f} tok/s"
-        f" (x{speedup:.2f} throughput, Δ{delta:+.3f}s duration)"
+        f"- {label}: streaming {stream_tp:.2f} tok/s ({stream_duration:.3f}s) vs traditional"
+        f" {greedy_tp:.2f} tok/s ({greedy_duration:.3f}s); {faster} by {abs(delta):.3f}s"
+        f" with x{speedup:.2f} throughput"
     )
 
 

@@ -58,7 +58,7 @@ class ModelBackend:
     def tokenize(self, prompt: str) -> List[int]:
         """Convert prompt text to token ids."""
         token_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
-        logger.info("Tokenized prompt into %d tokens", len(token_ids))
+        logger.debug("Tokenized prompt into %d tokens", len(token_ids))
         return token_ids
 
     def decode_tokens(self, token_ids: List[int]) -> str:
