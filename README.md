@@ -30,6 +30,7 @@ uv run python one_click_compare.py --multi-turn \
 ```
 
 If you run `python one_click_compare.py` with no prompt, it will default to the preset benchmark suite (short, long, and two-turn scenarios) and print a throughput comparison table.
+For realism, the default benchmark uses `max_new_tokens=256` when no prompt is provided.
 
 Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
 
@@ -144,7 +145,7 @@ Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qw
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 
-Default benchmark suite (3 chat turns, max_new_tokens=128) on `Qwen/Qwen2.5-0.5B-Instruct`:
+Default benchmark suite (3 chat turns, max_new_tokens=256 when no prompt is given) on `Qwen/Qwen2.5-0.5B-Instruct`:
 
 ```
 Streaming chat summary: throughput=37.16 tok/s, duration=10.387s

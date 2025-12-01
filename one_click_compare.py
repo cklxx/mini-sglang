@@ -51,6 +51,7 @@ BENCHMARK_TURNS = [
     "Draft a two-sentence update about migrating from batched generate to streaming decode for an LLM chat service.",
     "Rewrite the update as three crisp numbered bullets with a latency metric placeholder.",
 ]
+BENCHMARK_MAX_NEW_TOKENS = 256
 REQUIREMENTS_PATH = Path(__file__).resolve().parent / "requirements.txt"
 
 
@@ -535,8 +536,11 @@ def main() -> None:
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )
 
-    token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
     user_turns = args.prompt
+    if not user_turns and args.max_new_tokens is None:
+        token_budget = max(BENCHMARK_MAX_NEW_TOKENS, MAX_NEW_TOKENS_DEFAULT)
+    else:
+        token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
 
     if not args.no_optimizations and not args.no_warmup:
         warmup_tokens = max(1, min(args.warmup_tokens, token_budget))
