@@ -11,7 +11,7 @@ import torch
 # Default to a modern, small instruct model for better quality than legacy GPT-2.
 MODEL_NAME: str = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 # Use a longer default generation budget to surface streaming benefits.
-MAX_NEW_TOKENS_DEFAULT: int = 128
+MAX_NEW_TOKENS_DEFAULT: int = 512
 
 
 def get_device() -> str:

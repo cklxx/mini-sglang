@@ -51,7 +51,7 @@ BENCHMARK_TURNS = [
     "Draft a two-sentence update about migrating from batched generate to streaming decode for an LLM chat service.",
     "Rewrite the update as three crisp numbered bullets with a latency metric placeholder.",
 ]
-BENCHMARK_MAX_NEW_TOKENS = 256
+BENCHMARK_MAX_NEW_TOKENS = 512
 REQUIREMENTS_PATH = Path(__file__).resolve().parent / "requirements.txt"
 
 
