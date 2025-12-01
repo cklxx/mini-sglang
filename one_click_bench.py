@@ -94,6 +94,7 @@ def main() -> None:
     print(f"Running benchmark with model={MODEL_NAME} max_new_tokens={args.max_new_tokens}")
     print(f"Prompt: {args.prompt!r}\n")
 
+    # Local (engine) benchmarks
     s_text, s_duration = run_streaming(
         engine=engine, prompt=args.prompt, max_new_tokens=args.max_new_tokens
     )
@@ -104,17 +105,21 @@ def main() -> None:
     )
     b_metrics = summarize("HF streaming baseline", b_text, b_duration, backend)
 
+    print("Local results (engine only):")
+    print(f"- sglang streaming:  throughput={s_metrics['throughput']:.2f} tok/s  duration={s_metrics['duration']:.3f}s")
+    print(f"- HF streaming baseline: throughput={b_metrics['throughput']:.2f} tok/s  duration={b_metrics['duration']:.3f}s")
+    print("\nLocal previews:")
+    print(f"- sglang: {s_text[:120]!r}")
+    print(f"- HF baseline: {b_text[:120]!r}")
+
+    # Server benchmarks (same backend, different modes)
     sv_text, sv_ttfb, sv_tp = run_server_stream(args.prompt, args.max_new_tokens, mode="sglang")
     sv_hf_text, sv_hf_ttfb, sv_hf_tp = run_server_stream(args.prompt, args.max_new_tokens, mode="hf")
 
-    print("Results:")
-    print(f"- sglang streaming:  throughput={s_metrics['throughput']:.2f} tok/s  duration={s_metrics['duration']:.3f}s")
-    print(f"- HF streaming baseline: throughput={b_metrics['throughput']:.2f} tok/s  duration={b_metrics['duration']:.3f}s")
+    print("\nServer results (FastAPI /generate):")
     print(f"- HTTP server (sglang): throughput={sv_tp:.2f} tok/s  TTFB={sv_ttfb:.3f}s")
     print(f"- HTTP server (hf baseline): throughput={sv_hf_tp:.2f} tok/s  TTFB={sv_hf_ttfb:.3f}s")
-    print("\nPreviews:")
-    print(f"- sglang: {s_text[:120]!r}")
-    print(f"- HF baseline: {b_text[:120]!r}")
+    print("\nServer previews:")
     print(f"- server (sglang): {sv_text[:120]!r}")
     print(f"- server (hf): {sv_hf_text[:120]!r}")
 
