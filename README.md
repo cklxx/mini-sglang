@@ -29,7 +29,7 @@ uv run python one_click_compare.py --multi-turn \
   "Give me a TL;DR"
 ```
 
-If you run `python one_click_compare.py` with no prompt, it will now default to the preset benchmark suite (short, long, and two-turn scenarios) and print a throughput comparison table.
+If you run `python one_click_compare.py` with no prompt, it will default to the preset benchmark suite (short, long, and two-turn scenarios) and print a throughput comparison table.
 
 Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
 
@@ -93,7 +93,6 @@ Flags:
 * `--max-new-tokens`: token budget for both modes (defaults to 128)
 * `--model`: override the default modern small model
 * `--multi-turn`: treat multiple prompts as sequential chat turns
-* `--benchmark-suite`: run preset short + long prompts and print a comparison table
 * `--no-bootstrap`: skip auto-install if deps are pre-installed
 
 Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.

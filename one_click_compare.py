@@ -155,11 +155,6 @@ def parse_args() -> argparse.Namespace:
         help="Treat the prompts as sequential user turns for a chat benchmark",
     )
     parser.add_argument(
-        "--benchmark-suite",
-        action="store_true",
-        help="Run a preset short + long benchmark and print a throughput comparison table",
-    )
-    parser.add_argument(
         "--max-new-tokens",
         type=int,
         dest="max_new_tokens",
@@ -516,7 +511,7 @@ def main() -> None:
     token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
     user_turns = args.prompt
 
-    if args.benchmark_suite or not user_turns:
+    if not user_turns:
         logging.info(
             "Running benchmark suite with model=%s max_new_tokens=%d",
             model_name,
