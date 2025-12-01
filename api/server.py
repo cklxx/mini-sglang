@@ -15,9 +15,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from sglang_mini.backend.model_backend import ModelBackend
-from sglang_mini.config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
-from sglang_mini.engine.engine import SGLangMiniEngine
+from backend.model_backend import ModelBackend
+from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
+from engine.engine import SGLangMiniEngine
 
 logging.basicConfig(
     level=logging.INFO,

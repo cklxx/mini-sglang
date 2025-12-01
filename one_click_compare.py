@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 import platform
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 DEFAULT_TINY_MODEL = "sshleifer/tiny-gpt2"
 REQUIREMENTS_PATH = Path(__file__).resolve().parent / "requirements.txt"
 
@@ -100,9 +104,9 @@ import shutil  # noqa: E402  # isort:skip
 def load_components():
     """Import project components only after deps exist."""
 
-    from sglang_mini.backend.model_backend import ModelBackend
-    from sglang_mini.config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
-    from sglang_mini.engine.engine import SGLangMiniEngine
+    from backend.model_backend import ModelBackend
+    from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
+    from engine.engine import SGLangMiniEngine
 
     return ModelBackend, SGLangMiniEngine, MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 
