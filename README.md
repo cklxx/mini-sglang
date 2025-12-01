@@ -103,6 +103,7 @@ Performance knobs (inspired by sglang defaults):
 - `torch.compile` opt-in (`--compile-model` or `COMPILE_MODEL=1`, `COMPILE_MODE` to adjust mode).
 - Autocast + inference_mode around forward/generate to cut Python/dispatch overhead.
 - One-shot warmup run before benchmarks (skip with `--no-warmup` or `--no-optimizations`).
+- Decode input buffer reuse to avoid per-step tensor allocs (`DECODE_BUFFER=0` to disable).
 
 Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
 

@@ -37,6 +37,10 @@ class ModelBackend:
         self.model.eval()
 
         self.device = device
+        self.decode_buffer_enabled = os.getenv("DECODE_BUFFER", "1") != "0"
+        self._decode_buffer = torch.empty(
+            (1, 1), device=self.device, dtype=torch.long
+        ) if self.decode_buffer_enabled else None
         eos_id = (
             self.tokenizer.eos_token_id
             if self.tokenizer.eos_token_id is not None
@@ -79,7 +83,7 @@ class ModelBackend:
 
     def prefill_forward(self, prompt_ids: List[int]) -> Tuple[int, Any]:
         """Run the prefill (first) forward pass with KV cache enabled."""
-        input_ids = torch.tensor(prompt_ids, device=self.device).unsqueeze(0)
+        input_ids = torch.as_tensor(prompt_ids, device=self.device).unsqueeze(0)
         logger.info(
             "Running prefill_forward with sequence length=%d on device=%s",
             input_ids.shape[1],
@@ -100,7 +104,11 @@ class ModelBackend:
 
     def decode_forward(self, last_token_id: int, kv_cache: Any) -> Tuple[int, Any]:
         """Run a single decode step using the existing KV cache."""
-        input_ids = torch.tensor([[last_token_id]], device=self.device)
+        if self._decode_buffer is not None:
+            self._decode_buffer[0, 0] = last_token_id
+            input_ids = self._decode_buffer
+        else:
+            input_ids = torch.as_tensor([[last_token_id]], device=self.device)
         logger.debug(
             "Running decode_forward with last_token_id=%d (text=%r)",
             last_token_id,
@@ -130,7 +138,7 @@ class ModelBackend:
         Returns only the newly generated token ids (excluding the prompt).
         """
 
-        input_ids = torch.tensor(prompt_ids, device=self.device).unsqueeze(0)
+        input_ids = torch.as_tensor(prompt_ids, device=self.device).unsqueeze(0)
         attention_mask = torch.ones_like(input_ids)
         logger.info(
             "Running generate_greedy with seq_len=%d max_new_tokens=%d on %s",
@@ -163,7 +171,7 @@ class ModelBackend:
     ) -> Tuple[str, float]:
         """Stream tokens using HF's TextIteratorStreamer as a non-sglang baseline."""
 
-        input_ids = torch.tensor(prompt_ids, device=self.device).unsqueeze(0)
+        input_ids = torch.as_tensor(prompt_ids, device=self.device).unsqueeze(0)
         attention_mask = torch.ones_like(input_ids)
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True
