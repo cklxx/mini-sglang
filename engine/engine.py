@@ -39,7 +39,7 @@ class SGLangMiniEngine:
         self.backend = backend
         self.max_new_tokens_default = max_new_tokens_default
         self.decode_log_stride = decode_log_stride or int(
-            os.getenv("DECODE_LOG_STRIDE", "8")
+            os.getenv("DECODE_LOG_STRIDE", "32")
         )
 
     def run_generate(
@@ -91,7 +91,7 @@ class SGLangMiniEngine:
                     state.finished = True
                 text_delta = self.backend.decode_tokens([next_token_id])
                 should_log = (
-                    step_index < 2
+                    step_index == 0
                     or (step_index + 1) % max(1, self.decode_log_stride) == 0
                     or state.finished
                 )
