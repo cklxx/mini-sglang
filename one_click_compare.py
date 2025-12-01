@@ -70,7 +70,7 @@ def ensure_dependencies() -> None:
     """
 
     needed = []
-    for pkg in ("torch", "transformers", "fastapi", "uvicorn", "sentencepiece"):
+    for pkg in ("torch", "transformers", "fastapi", "uvicorn", "sentencepiece", "httpx"):
         if importlib.util.find_spec(pkg) is None:
             needed.append(pkg)
     if not needed:

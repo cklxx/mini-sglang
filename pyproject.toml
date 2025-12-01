@@ -15,6 +15,7 @@ dependencies = [
     "transformers",
     "torch",
     "sentencepiece",
+    "httpx",
 ]
 
 [tool.setuptools]
