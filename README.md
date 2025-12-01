@@ -131,3 +131,18 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
 Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`).
+
+### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
+
+Default benchmark suite (3 chat turns, max_new_tokens=128) on `Qwen/Qwen2.5-0.5B-Instruct`:
+
+```
+Streaming chat summary: throughput=37.16 tok/s, duration=10.387s
+Baseline HF streaming chat summary: throughput=17.69 tok/s, duration=21.825s
+Comparison: streaming faster by 11.438s with x2.10 throughput
+```
+
+Why sglang-style streaming is faster here:
+- Prefill + decode loop runs in-process with explicit KV reuse and minimal Python overhead between steps.
+- HF streaming baseline re-enters the generator loop and Python callback machinery per token (TextIteratorStreamer), adding per-token overhead.
+- Both use the same model and device (Apple M1 Pro via MPS); differences are from orchestration, not model quality.
