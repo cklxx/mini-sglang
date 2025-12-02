@@ -142,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sglang-url",
         type=str,
-        help="Optional remote sglang server URL; defaults to launching a local Runtime",
+        help="Optional remote sglang server URL; defaults to http://localhost:30000",
     )
     parser.add_argument(
         "--model",
@@ -158,32 +158,16 @@ def main() -> None:
     token_budget = args.max_new_tokens
     model_name = args.model or MODEL_NAME
 
-    runtime: Any = None
+    # Default to an externally managed sglang server on localhost; avoid auto-starting a Runtime.
     runtime_tokenizer: TokenizerLike | None = None
-    sglang_url: str
-    sgl_runtime_cls: Any = sgl.Runtime
-    if args.sglang_url:
-        sglang_url = args.sglang_url.rstrip("/")
-    else:
-        runtime = sgl_runtime_cls(
-            model_path=model_name,
-            tokenizer_path=model_name,
-            trust_remote_code=True,
-            log_level="error",
-        )
-        sglang_url = str(runtime.url)
-        runtime_tokenizer = cast(TokenizerLike, runtime.get_tokenizer())
+    sglang_url = (args.sglang_url or "http://localhost:30000").rstrip("/")
 
-    try:
-        sg_text, sg_ttfb, sg_duration, sg_tokens = stream_sglang_http(
-            prompt=args.prompt,
-            max_new_tokens=token_budget,
-            server_url=sglang_url,
-            tokenizer=runtime_tokenizer,
-        )
-    finally:
-        if runtime is not None:
-            runtime.shutdown()
+    sg_text, sg_ttfb, sg_duration, sg_tokens = stream_sglang_http(
+        prompt=args.prompt,
+        max_new_tokens=token_budget,
+        server_url=sglang_url,
+        tokenizer=runtime_tokenizer,
+    )
 
     mini_text, mini_ttfb, mini_duration, mini_tokens = stream_mini_server(
         prompt=args.prompt, max_new_tokens=token_budget, mode="sglang"

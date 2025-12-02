@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -73,7 +73,6 @@ class ModelBackend:
         self._init_chunked_prefill()
         self._init_decode_buffer()
         self._detect_dynamic_cache()
-        self._init_cuda_graph_settings()
         self._init_generation_config()
 
         logger.info(
@@ -108,59 +107,14 @@ class ModelBackend:
     # Streaming-friendly forward passes (prefill + decode)
     # ------------------------------------------------------------------
 
-    def _get_prefill_graph(self, seq_len: int) -> Callable[[torch.Tensor], Any] | None:
-        if not self.cuda_graph_enabled or seq_len > self.cuda_graph_max_seq_len:
-            return None
-        if seq_len in self._prefill_graphs:
-            graph = self._prefill_graphs.pop(seq_len)
-            self._prefill_graphs[seq_len] = graph
-            return graph
-        sample_ids = torch.zeros((1, seq_len), device=self.device, dtype=torch.long)
-
-        def _prefill_with_cache(input_ids: torch.Tensor) -> Any:
-            return self.model(input_ids=input_ids, use_cache=True)
-
-        try:
-            graph_callable = torch.cuda.make_graphed_callables(_prefill_with_cache, (sample_ids,))
-            graph = cast(Callable[[torch.Tensor], Any], graph_callable)
-            self._prefill_graphs[seq_len] = graph
-            if len(self._prefill_graphs) > 4:
-                self._prefill_graphs.pop(next(iter(self._prefill_graphs)))
-            logger.info("Captured CUDA graph for prefill seq_len=%d", seq_len)
-            return graph
-        except Exception as exc:  # pragma: no cover - best-effort path
-            logger.warning("Failed to capture CUDA graph for seq_len=%d (%s)", seq_len, exc)
-            self.cuda_graph_enabled = False
-            return None
-
     def _prefill_call(self, input_ids: torch.Tensor, past_key_values: Any | None):
-        graph = None if past_key_values is not None else self._get_prefill_graph(input_ids.shape[1])
         auto_ctx, inf_ctx = inference_context(self.device)
         with auto_ctx, inf_ctx:
-            if graph is not None:
-                return graph(input_ids)
-            return self.model(
-                input_ids=input_ids, past_key_values=past_key_values, use_cache=True
-            )
+            return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
 
     def _decode_call(self, input_ids: torch.Tensor, past_key_values: Any) -> Any:
-        """Decode step with optional CUDA graph capture (single-token decode)."""
-        if not self.decode_graph_enabled:
-            return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
-        if self._decode_graph is None:
-            try:
-                sample_ids = torch.zeros_like(input_ids)
-
-                def _decode(ids: torch.Tensor, kv: Any):
-                    return self.model(input_ids=ids, past_key_values=kv, use_cache=True)
-
-                self._decode_graph = torch.cuda.make_graphed_callables(_decode, (sample_ids, past_key_values))
-                logger.info("Captured CUDA graph for decode step")
-            except Exception as exc:  # pragma: no cover - best-effort path
-                logger.warning("Failed to capture decode CUDA graph (%s)", exc)
-                self.decode_graph_enabled = False
-                return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
-        return cast(Callable[[torch.Tensor, Any], Any], self._decode_graph)(input_ids, past_key_values)
+        """Decode step (single-token decode)."""
+        return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
 
     def prefill_forward(self, prompt_ids: List[int]) -> Tuple[int, Any]:
         """Run the prefill (first) forward pass with KV cache enabled."""
@@ -210,12 +164,7 @@ class ModelBackend:
         )
         auto_ctx, inf_ctx = inference_context(self.device)
         with auto_ctx, inf_ctx:
-            if self.decode_graph_enabled:
-                outputs = self._decode_call(input_ids, kv_cache)
-            else:
-                outputs = self.model(
-                    input_ids=input_ids, past_key_values=kv_cache, use_cache=True
-                )
+            outputs = self._decode_call(input_ids, kv_cache)
         logits = outputs.logits[:, -1, :]
         next_token_id = torch.argmax(logits, dim=-1).item()
         new_kv_cache = outputs.past_key_values
@@ -404,18 +353,6 @@ class ModelBackend:
             if self.decode_buffer_enabled
             else None
         )
-
-    def _init_cuda_graph_settings(self) -> None:
-        # CUDA graph capture is opt-in; many HF models (DynamicCache/autocast) do not support it.
-        self.cuda_graph_enabled = (
-            self._flag_from_env("ENABLE_CUDA_GRAPH", default=False) and self.device.startswith("cuda")
-        )
-        self.cuda_graph_max_seq_len = int(os.getenv("CUDA_GRAPH_MAX_SEQ_LEN", "512"))
-        self._prefill_graphs: Dict[int, Callable[[torch.Tensor], Any]] = {}
-        self.decode_graph_enabled = (
-            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=False) and self.device.startswith("cuda")
-        )
-        self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None
 
     def _init_generation_config(self) -> None:
         self.aggressive_max_new_tokens = self._flag_from_env("AGGRESSIVE_MAX_NEW_TOKENS", True)
