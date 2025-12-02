@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from queue import SimpleQueue
 from threading import Thread
 from typing import Generator, Optional
@@ -90,6 +91,7 @@ def generate(request: GenerateRequest):
         queue: SimpleQueue[bytes] = SimpleQueue()
         sentinel = b"__mini_sglang_done__"
         send_count = 0
+        start_time = time.perf_counter()
 
         def stream_callback(text_delta: str) -> None:
             nonlocal send_count
@@ -108,14 +110,15 @@ def generate(request: GenerateRequest):
             engine, lease = pool.pick(prompt_ids=prompt_ids)
             max_tokens = pool.adapt_max_new_tokens(len(prompt_ids), requested_tokens, engine.backend)
             try:
+                generated_text = ""
                 if mode == "sglang":
-                    engine.run_generate(
+                    generated_text = engine.run_generate(
                         prompt=request.prompt,
                         max_new_tokens=max_tokens,
                         stream_callback=stream_callback,
                     )
                 else:
-                    engine.backend.generate_streaming_baseline(
+                    generated_text, _ = engine.backend.generate_streaming_baseline(
                         prompt_ids=prompt_ids,
                         max_new_tokens=max_tokens or MAX_NEW_TOKENS_DEFAULT,
                         stream_callback=stream_callback,
@@ -129,6 +132,13 @@ def generate(request: GenerateRequest):
                     engine.backend.cache_metrics(),
                 )
             finally:
+                duration = time.perf_counter() - start_time
+                try:
+                    gen_tokens = len(engine.backend.tokenize(generated_text)) if generated_text else 0
+                except Exception:
+                    gen_tokens = 0
+                total_tokens = len(prompt_ids) + gen_tokens
+                pool.record_generation(duration_s=duration, tokens=total_tokens)
                 pool.release(lease)
 
         thread = Thread(target=run_engine, daemon=True)

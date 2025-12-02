@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import random
+from collections import deque
 from queue import SimpleQueue
 from typing import Any
 
@@ -73,6 +74,9 @@ class EnginePool:
             self._prefill_queue = SimpleQueue()
             thread = threading.Thread(target=self._prefill_worker, daemon=True)
             thread.start()
+        window = int(os.getenv("METRIC_WINDOW", "50"))
+        self._latencies = deque(maxlen=window)
+        self._throughputs = deque(maxlen=window)
 
     @property
     def primary_backend(self) -> Any:
@@ -216,12 +220,16 @@ class EnginePool:
             stats = eng.backend.cache_metrics()
             for k, v in stats.items():
                 cache_totals[k] = cache_totals.get(k, 0) + v
+        avg_latency = sum(self._latencies) / len(self._latencies) if self._latencies else 0.0
+        avg_throughput = sum(self._throughputs) / len(self._throughputs) if self._throughputs else 0.0
         return {
             "scheduler": scheduler,
             "pool_size": pool_size,
             "inflight_total": total_inflight,
             "inflight_per_engine": inflight,
             "cache": cache_totals,
+            "avg_latency_s": avg_latency,
+            "avg_throughput_tok_s": avg_throughput,
         }
 
     def adapt_max_new_tokens(self, prompt_len: int, requested: int, backend: Any) -> int:
@@ -246,3 +254,10 @@ class EnginePool:
                 )
                 max_tokens = new_tokens
         return max_tokens
+
+    def record_generation(self, duration_s: float, tokens: int) -> None:
+        if duration_s <= 0:
+            return
+        throughput = tokens / duration_s if duration_s > 0 else 0.0
+        self._latencies.append(duration_s)
+        self._throughputs.append(throughput)
