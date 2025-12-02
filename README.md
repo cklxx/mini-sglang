@@ -1,49 +1,31 @@
 # mini-sglang
 
-A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmark comparisons now contrast streaming mini-sglang against a plain Hugging Face `generate()` baseline (non-sglang) rather than exposing a non-streaming HTTP mode.
+A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks now compare real `sglang`, this mini stack, and a plain Hugging Face streaming baseline in both local and HTTP server modes.
 
-### One-line quickstart (auto installs + modern small model)
+### Quickstart
 
-> Prefer `uv`? A `pyproject.toml` is now committed so you can run `uv sync` to
-> install deps from the project metadata instead of the requirements file.
-
-If you have [uv](https://github.com/astral-sh/uv) installed, you can bootstrap dependencies, download a modern small instruct model (falls back to 魔搭 ModelScope when huggingface.co is blocked), and run streaming **and** traditional generation side by side with a single command (CPU/Mac friendly):
+Install dependencies from `requirements.txt` or the committed `pyproject.toml` and run the two benchmark scripts:
 
 ```bash
-uv run python one_click_compare.py "Hello mini-sglang"
+# Local mode: sglang Runtime vs mini-sglang vs HF streaming
+python local_bench.py --max-new-tokens 128 "Hello mini-sglang"
+
+# Server mode: sglang HTTP endpoint vs the FastAPI demo (sglang + HF modes)
+python server_bench.py --max-new-tokens 128 "Hello mini-sglang"
 ```
 
-No UV? The same script will auto-install uv (unless you set `AUTO_INSTALL_UV=0`) and fall back to `pip` if needed. You can also skip installation by passing `--no-bootstrap` if your environment is already set up:
-
-```bash
-python one_click_compare.py "Hello mini-sglang"
-```
-
-To benchmark a short chat with multiple user turns (history preserved for both
-streaming and vanilla baselines), pass several prompts plus `--multi-turn`:
-
-```bash
-uv run python one_click_compare.py --multi-turn \
-  "Hello mini-sglang" \
-  "What's different about streaming?" \
-  "Give me a TL;DR"
-```
-
-If you run `python one_click_compare.py` with no prompt, it will default to the preset benchmark suite (short, long, and two-turn scenarios) and print a throughput comparison table.
-For realism, the default benchmark uses `max_new_tokens=512` when no prompt is provided.
-
-Readable INFO logs narrate every prefill/decode step, so learners can follow the entire pipeline end to end.
+Both scripts default to the model in `MODEL_NAME` and allow overrides via `--model`. The server benchmark will start a local `sglang.Runtime` if you do not supply `--sglang-url`.
 
 ## Project layout
 ```
 requirements.txt
-config.py           # (sglang global config analogue; source file: [global_config.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/global_config.py)) model choice + device selection
-backend/model_backend.py  # (sglang backend analogue; source file: [model_runner.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/model_executor/model_runner.py)) model + tokenizer + KV cache helpers
-engine/engine.py    # (sglang engine analogue; source file: [entrypoints/engine.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/engine.py)) prefill + decode orchestration
-api/server.py       # (sglang API analogue; source file: [entrypoints/http_server.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py)) FastAPI server exposing POST /generate
-cli_demo.py         # Minimal client to stream tokens in a terminal (sglang CLI source: [cli/generate.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/cli/generate.py))
-benchmark.py        # Streaming vs vanilla generate() comparison helper (benchmarks in [bench_serving.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/bench_serving.py))
-one_click_compare.py  # All-in-one bootstrap + streaming vs traditional demo
+config.py              # (sglang global config analogue) model choice + device selection
+backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
+engine/engine.py       # (sglang engine analogue) prefill + decode orchestration
+api/server.py          # (sglang API analogue) FastAPI server exposing POST /generate
+cli_demo.py            # Minimal client to stream tokens in a terminal
+local_bench.py         # Local benchmark: sglang Runtime vs mini-sglang vs HF streaming
+server_bench.py        # HTTP benchmark: sglang server vs mini-sglang FastAPI (sglang + HF modes)
 ```
 
 ## Usage
@@ -59,8 +41,6 @@ pip install -r requirements.txt
 uv sync
 ```
 
-The one-click script mirrors this behavior: on Linux it defaults to the CPU index unless you set `ALLOW_CUDA_TORCH=1`, and you can override the index explicitly with `TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu uv run ...`. On macOS the default pip wheels cover CPU and MPS. If uv is missing, the script will attempt to install it automatically so the remaining steps still run with a single command.
-
 CLI demo (streaming-only):
 ```bash
 python cli_demo.py
@@ -75,40 +55,13 @@ python smoke_test.py --max-new-tokens 32 "Hello from mini-sglang"
 ```
 The streaming run exercises the full prefill + decode path and streams tokens to stdout. For non-sglang baselines, use the comparison or benchmark scripts below.
 
-Run a quick benchmark comparing streaming vs. vanilla Hugging Face `generate()` (non-sglang baseline):
+Run the local benchmark comparing sglang Runtime, mini-sglang, and the HF streaming baseline:
 ```bash
-python benchmark.py --max-new-tokens 64 "Benchmarking mini-sglang"
+python local_bench.py --max-new-tokens 64 "Benchmarking mini-sglang"
 ```
-The benchmark prints token counts, wall-clock duration, and throughput for both modes so you can evaluate normal inference speed versus the step-by-step streaming loop.
+The benchmark prints token counts, wall-clock duration, and throughput for all three so you can evaluate orchestration overhead.
 
-### One-click side-by-side script (auto-downloads small instruct model)
-
-If you just want a single command that initializes everything, downloads a small instruct model, and prints streaming vs. traditional outputs with readable logs, run the quickstart above or:
-
-```bash
-python one_click_compare.py "Hello mini-sglang"
-```
-
-Flags:
-
-* `--max-new-tokens`: token budget for both modes (defaults to 128)
-* `--model`: override the default modern small model
-* `--multi-turn`: treat multiple prompts as sequential chat turns
-* `--compile-model`: try `torch.compile` for extra speed (best effort)
-* `--warmup-tokens` / `--no-warmup`: control a short warmup generation to amortize cold start
-* `--no-optimizations`: disable torch perf knobs and warmup
-* `--no-bootstrap`: skip auto-install if deps are pre-installed
-
-Performance knobs (inspired by sglang defaults):
-- TF32/benchmark flags for CUDA and tuned matmul precision (set via env `MATMUL_PRECISION`, `ENABLE_SDP=0` to disable flash/mem-efficient attention on CUDA).
-- `torch.compile` opt-in (`--compile-model` or `COMPILE_MODEL=1`, `COMPILE_MODE` to adjust mode).
-- Autocast + inference_mode around forward/generate to cut Python/dispatch overhead.
-- One-shot warmup run before benchmarks (skip with `--no-warmup` or `--no-optimizations`).
-- Decode input buffer reuse to avoid per-step tensor allocs (`DECODE_BUFFER=0` to disable).
-- Token and prefill KV LRU caches to skip repeat tokenization and prefill (`TOKEN_CACHE_SIZE`, `PREFILL_CACHE_SIZE`).
-- Server startup warmup to amortize first-request latency.
-
-Logs at INFO level narrate every prefill/decode stream chunk and the traditional `generate()` call so beginners can follow the full flow. Summaries include token counts and throughput for both modes.
+Logs at INFO level narrate every prefill/decode stream chunk so beginners can follow the full flow. Summaries include token counts and throughput for each path.
 
 Start HTTP server:
 ```bash
@@ -130,22 +83,13 @@ Responses are JSON lines streamed chunk-by-chunk, e.g.:
 {"event": "done"}
 ```
 
-The HTTP API is streaming-only; for non-sglang baselines use `benchmark.py` or `one_click_compare.py`.
+The HTTP API is streaming-only; for non-sglang baselines use `local_bench.py` or `server_bench.py`.
 
 Benchmark the server path (TTFB + throughput):
 ```bash
-python server_benchmark.py --max-new-tokens 128
+python server_bench.py --max-new-tokens 128
 ```
-The server benchmark now prints three views side-by-side so you can see how the
-streaming FastAPI path compares to the HF streaming baseline **and** an
-in-process mini-sglang engine run (no HTTP overhead). Use ``--no-bootstrap``
-if you've already installed dependencies (``sglang`` is now included).
-
-One-click bench (sglang vs HF streaming vs HTTP server):
-```bash
-python one_click_bench.py --max-new-tokens 128
-```
-To stream via HF baseline on the server, set `mode="hf"` in the request body.
+The server benchmark prints three views side-by-side so you can see how the streaming FastAPI path compares to the HF streaming baseline **and** a real `sglang` server (started automatically when no URL is supplied).
 
 Multi-device CUDA (round robin):
 - Enabled by default when multiple CUDA GPUs exist (`ENABLE_MULTI_DEVICE=0` to force single device).
