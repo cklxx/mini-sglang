@@ -406,15 +406,14 @@ class ModelBackend:
         )
 
     def _init_cuda_graph_settings(self) -> None:
+        # CUDA graph capture is opt-in; many HF models (DynamicCache/autocast) do not support it.
         self.cuda_graph_enabled = (
-            self._flag_from_env("ENABLE_CUDA_GRAPH", default=True)
-            and self.device.startswith("cuda")
+            self._flag_from_env("ENABLE_CUDA_GRAPH", default=False) and self.device.startswith("cuda")
         )
         self.cuda_graph_max_seq_len = int(os.getenv("CUDA_GRAPH_MAX_SEQ_LEN", "512"))
         self._prefill_graphs: Dict[int, Callable[[torch.Tensor], Any]] = {}
         self.decode_graph_enabled = (
-            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=True)
-            and self.device.startswith("cuda")
+            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=False) and self.device.startswith("cuda")
         )
         self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None
 
