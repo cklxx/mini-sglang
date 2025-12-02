@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import random
+from queue import SimpleQueue
 from typing import Any
 
 import torch
@@ -66,6 +67,12 @@ class EnginePool:
                 "Invalid SCHEDULER_MODE=%s, falling back to round robin", self.scheduler_mode
             )
             self.scheduler_mode = "rr"
+        self.async_prefill_enabled = os.getenv("ASYNC_PREFILL_QUEUE", "0") != "0"
+        self._prefill_queue: SimpleQueue[str] | None = None
+        if self.async_prefill_enabled:
+            self._prefill_queue = SimpleQueue()
+            thread = threading.Thread(target=self._prefill_worker, daemon=True)
+            thread.start()
 
     @property
     def primary_backend(self) -> Any:
@@ -180,6 +187,22 @@ class EnginePool:
                     eng.backend.insert_prefix(prompt)
                 except Exception as exc:
                     logger.warning("Failed to warm prefix %r on engine %s (%s)", prompt[:50], eng, exc)
+
+    def enqueue_prefill(self, prompt: str) -> None:
+        if not (self.async_prefill_enabled and self._prefill_queue):
+            return
+        self._prefill_queue.put(prompt)
+
+    def _prefill_worker(self) -> None:
+        if self._prefill_queue is None:
+            return
+        while True:
+            prompt = self._prefill_queue.get()
+            try:
+                engine = self.engines[0]
+                engine.backend.insert_prefix(prompt)
+            except Exception as exc:
+                logger.debug("Async prefill failed for prompt %r (%s)", prompt[:50], exc)
 
     def metrics(self) -> dict[str, Any]:
         """Lightweight pool metrics for observability."""

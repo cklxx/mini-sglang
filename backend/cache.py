@@ -9,6 +9,42 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+class KVPageManager:
+    """Lightweight KV store with token-budget eviction (page-like)."""
+
+    def __init__(self, token_budget: int, page_size: int = 512) -> None:
+        self.token_budget = token_budget
+        self.page_size = max(1, page_size)
+        self._store: OrderedDict[str, Tuple[Any, int]] = OrderedDict()
+        self._next_id = 0
+
+    def add(self, kv_cache: Any, tokens: int) -> str:
+        handle = f"kv_{self._next_id}"
+        self._next_id += 1
+        self._store[handle] = (kv_cache, tokens)
+        self._trim()
+        return handle
+
+    def get(self, handle: str) -> Any | None:
+        if handle not in self._store:
+            return None
+        kv_cache, tokens = self._store.pop(handle)
+        self._store[handle] = (kv_cache, tokens)
+        return kv_cache
+
+    def remove(self, handle: str) -> None:
+        self._store.pop(handle, None)
+
+    def _trim(self) -> None:
+        if self.token_budget <= 0:
+            return
+        total_tokens = sum(tokens for _, tokens in self._store.values())
+        while self._store and total_tokens > self.token_budget:
+            _, (kv, tokens) = self._store.popitem(last=False)
+            del kv
+            total_tokens -= tokens
+
+
 class CacheStats:
     def __init__(self) -> None:
         self.prefill_hits = 0
@@ -130,6 +166,10 @@ class PrefixCache:
         self.cache: OrderedDict[Tuple[int, ...], Any] = OrderedDict()
         self._trie = _PrefixTrieNode()
         self._freq: Dict[Tuple[int, ...], int] = {}
+        self._page_mgr: KVPageManager | None = None
+
+    def bind_page_manager(self, page_mgr: KVPageManager | None) -> None:
+        self._page_mgr = page_mgr
 
     def maybe_get(self, prompt_ids: List[int], stats: CacheStats) -> tuple[Tuple[int, ...], Any] | None:
         if not (self.enable and self.size > 0):
@@ -140,11 +180,15 @@ class PrefixCache:
             return None
         tokens, cached_kv = match
         stats.prefix_hits += 1
+        kv_cache = self._resolve_kv(cached_kv)
+        if kv_cache is None:
+            stats.prefix_misses += 1
+            return None
         if tokens in self.cache:
             self.cache.pop(tokens)
             self.cache[tokens] = cached_kv
             self._freq[tokens] = self._freq.get(tokens, 0) + 1
-        return tokens, cached_kv
+        return tokens, kv_cache
 
     def match_length(self, prompt_ids: List[int]) -> int:
         if not (self.enable and self.size > 0):
@@ -168,8 +212,9 @@ class PrefixCache:
             )
             return
         token_tuple = tuple(prompt_ids)
-        self.cache[token_tuple] = kv_cache
-        self._trie.insert(token_tuple, kv_cache)
+        stored = self._store_kv(kv_cache, len(prompt_ids))
+        self.cache[token_tuple] = stored
+        self._trie.insert(token_tuple, stored)
         self._freq[token_tuple] = self._freq.get(token_tuple, 0) + 1
         if len(self.cache) > self.size:
             evicted = self._evict_one()
@@ -185,10 +230,11 @@ class PrefixCache:
             return
         total_tokens = sum(len(t) for t in self.cache.keys())
         while self.cache and total_tokens > self.token_budget:
-            oldest_tokens, _ = self.cache.popitem(last=False)
+            oldest_tokens, stored = self.cache.popitem(last=False)
             total_tokens -= len(oldest_tokens)
             self._trie.remove(oldest_tokens)
             self._freq.pop(oldest_tokens, None)
+            self._drop_kv(stored)
 
     def _evict_one(self) -> Optional[Tuple[int, ...]]:
         if not self.cache:
@@ -207,6 +253,25 @@ class PrefixCache:
                 self._freq.pop(candidate, None)
                 return candidate
         # Default LRU eviction.
-        evicted, _ = self.cache.popitem(last=False)
+        evicted, stored = self.cache.popitem(last=False)
         self._freq.pop(evicted, None)
+        self._drop_kv(stored)
         return evicted
+
+    def _store_kv(self, kv_cache: Any, tokens: int) -> Any:
+        if self._page_mgr is None:
+            return kv_cache
+        return self._page_mgr.add(kv_cache, tokens)
+
+    def _drop_kv(self, stored: Any) -> None:
+        if self._page_mgr is None:
+            return
+        if isinstance(stored, str):
+            self._page_mgr.remove(stored)
+
+    def _resolve_kv(self, stored: Any) -> Any | None:
+        if self._page_mgr is None:
+            return stored
+        if isinstance(stored, str):
+            return self._page_mgr.get(stored)
+        return stored

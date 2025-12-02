@@ -20,17 +20,19 @@ Both scripts default to the model in `MODEL_NAME` and allow overrides via `--mod
 
 - **Prefix caching**: reuse prefill KV for repeated prompts (`PREFIX_CACHE=1`, `PREFIX_CACHE_SIZE=16`).
 - **Longest-prefix matching**: prefix cache picks the deepest matching prefix with a radix-style lookup (O(prefix length)) instead of scanning the cache.
-- **Prefix cache controls**: skip caching overly long prompts (`PREFIX_CACHE_MAX_TOKENS`, default 4096), cap total cached tokens (`PREFIX_CACHE_TOKEN_BUDGET`, default 65536), optionally switch eviction policy (`PREFIX_CACHE_POLICY=lru|lfu`, default lru), and allow manual pre-insertion via `ModelBackend.insert_prefix(...)`.
+- **Prefix cache controls**: skip caching overly long prompts (`PREFIX_CACHE_MAX_TOKENS`, default 4096), cap total cached tokens (`PREFIX_CACHE_TOKEN_BUDGET`, default 65536), optionally switch eviction policy (`PREFIX_CACHE_POLICY=lru|lfu`, default lru), and allow manual pre-insertion via `ModelBackend.insert_prefix(...)`. Prefix entries can spill into a KV page manager when `PAGE_TOKEN_BUDGET>0`.
 - **Prefill cache controls**: LRU by entry count (`PREFILL_CACHE_SIZE`, default 8) plus an optional total token budget (`PREFILL_CACHE_TOKEN_BUDGET`, default 65536).
 - **Scheduler modes**: pick generation engine via round robin (`SCHEDULER_MODE=rr`, default), lowest-load-first (`fsfs`), random (`random`), or cache-aware (`cache_aware`) which selects the engine with the deepest prefix cache hit and breaks ties by lower load.
 - **Backpressure limits**: cap concurrency with `MAX_INFLIGHT_TOTAL` (all engines) and `MAX_INFLIGHT_PER_ENGINE` (per device). Requests block until capacity frees.
 - **Prefix warmup**: optionally prefill and cache common prompts at server startup via `WARM_PREFIXES="prompt1||prompt2"`.
+- **Async prefill queue (opt-in)**: set `ASYNC_PREFILL_QUEUE=1` to run background prefix inserts so prompts start warming while decode threads stream.
 - **Cache stats**: per-request logs include prefill/prefix cache hit/miss counters for quick observability.
 - **Load dtype control**: optionally set `MODEL_DTYPE`/`TORCH_DTYPE` to `fp16`/`bf16`/`fp32` (or `auto` to pick float16 on CUDA/MPS) when loading the model.
 - **CUDA graphs for decode**: optionally capture the 1-token decode step (`ENABLE_DECODE_CUDA_GRAPH=1`, default) to reduce Python overhead on CUDA.
 - **Attention implementation override**: set `ATTN_IMPL`/`ATTN_IMPLEMENTATION` to `flash_attention_2`, `sdpa`, or `eager` to force a specific attention kernel when supported by the model.
 - **Metrics endpoint**: GET `/metrics` returns scheduler mode, inflight counts, and cache hit/miss stats (prefix + prefill).
 - **Adaptive max_new_tokens under load**: when `ADAPTIVE_MAX_NEW_TOKENS=1`, downscale `max_new_tokens` if inflight requests exceed a threshold (`ADAPTIVE_MAX_INFLIGHT_THRESHOLD`, default pool size; `ADAPTIVE_MAX_NEW_TOKENS_FACTOR`, default 0.8).
+- **KV page manager (opt-in)**: set `PAGE_TOKEN_BUDGET` (and optional `PAGE_SIZE_TOKENS`) to store prefix cache KV in a paged store with token-budget eviction.
 - **Tensor parallel loading**: shard the model across available CUDA devices automatically (`TENSOR_PARALLEL_SIZE` defaults to GPU count).
 - **Torch compilation**: wrap the model with `torch.compile` unless disabled (`COMPILE_MODEL=0` to opt out, optional `COMPILE_MODE`).
 - **CUDA graphs for prefill**: capture and replay prefill shapes on CUDA by default (`ENABLE_CUDA_GRAPH=1`, `CUDA_GRAPH_MAX_SEQ_LEN=512`).

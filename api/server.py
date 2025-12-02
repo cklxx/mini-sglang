@@ -102,6 +102,8 @@ def generate(request: GenerateRequest):
 
         def run_engine() -> None:
             prompt_ids = pool.primary_backend.tokenize(request.prompt)
+            if os.getenv("ASYNC_PREFILL_QUEUE", "0") != "0":
+                pool.enqueue_prefill(request.prompt)
             requested_tokens = request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
             engine, lease = pool.pick(prompt_ids=prompt_ids)
             max_tokens = pool.adapt_max_new_tokens(len(prompt_ids), requested_tokens, engine.backend)

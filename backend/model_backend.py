@@ -18,7 +18,7 @@ import httpx
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from backend.cache import CacheStats, PrefixCache, PrefillCache
+from backend.cache import CacheStats, PrefixCache, PrefillCache, KVPageManager
 from optimizations import configure_torch, inference_context, maybe_compile_model
 
 
@@ -377,11 +377,16 @@ class ModelBackend:
         self.prefix_cache_max_tokens = int(os.getenv("PREFIX_CACHE_MAX_TOKENS", "4096"))
         self.prefix_cache_token_budget = int(os.getenv("PREFIX_CACHE_TOKEN_BUDGET", "65536"))
         self.prefix_cache_policy = (os.getenv("PREFIX_CACHE_POLICY", "lru") or "lru").lower()
+        self.page_token_budget = int(os.getenv("PAGE_TOKEN_BUDGET", "0"))
+        self.page_size_tokens = int(os.getenv("PAGE_SIZE_TOKENS", "512"))
         self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
         self.cache_stats = CacheStats()
         self.prefill_cache = PrefillCache(
             size=self.prefill_cache_size, token_budget=self.prefill_cache_token_budget
         )
+        self.page_manager: KVPageManager | None = None
+        if self.page_token_budget > 0:
+            self.page_manager = KVPageManager(token_budget=self.page_token_budget, page_size=self.page_size_tokens)
         self.prefix_cache = PrefixCache(
             enable=self.enable_prefix_cache,
             size=self.prefix_cache_size,
@@ -389,6 +394,7 @@ class ModelBackend:
             token_budget=self.prefix_cache_token_budget,
             policy=self.prefix_cache_policy,
         )
+        self.prefix_cache.bind_page_manager(self.page_manager)
 
     def _init_chunked_prefill(self) -> None:
         # Optional chunked prefill to trade small extra passes for lower peak memory.
