@@ -297,22 +297,23 @@ class ModelBackend:
         return dtype
 
     def _detect_dynamic_cache(self) -> None:
-        """Detect HF DynamicCache and mark graph capture unsafe."""
+        """Force legacy/static cache to avoid HF DynamicCache paths."""
         self.uses_dynamic_cache = False
-        use_cache = getattr(self.model.config, "use_cache", True)
-        if isinstance(use_cache, str) and use_cache.lower() == "dynamic":
-            self.uses_dynamic_cache = True
-            return
         kv_cfg = getattr(self.model.config, "kv_cache_config", None)
+        use_cache = getattr(self.model.config, "use_cache", True)
+        coerced = False
+        if isinstance(use_cache, str) and use_cache.lower() == "dynamic":
+            self.model.config.use_cache = True
+            coerced = True
         impl = getattr(kv_cfg, "implementation", None)
         if isinstance(impl, str) and impl.lower() == "dynamic":
-            self.uses_dynamic_cache = True
-        if self.uses_dynamic_cache:
-            # Prefer eager path to avoid graph capture errors; allow opt-in override with HF_USE_LEGACY_CACHE=0.
-            if os.getenv("ENABLE_CUDA_GRAPH", "1") != "0" or os.getenv("ENABLE_DECODE_CUDA_GRAPH", "1") != "0":
-                logger.info("Detected DynamicCache; disabling CUDA graph capture (prefill/decode)")
-            os.environ["ENABLE_CUDA_GRAPH"] = "0"
-            os.environ["ENABLE_DECODE_CUDA_GRAPH"] = "0"
+            try:
+                kv_cfg.implementation = "pytorch"
+            except Exception:
+                self.model.config.kv_cache_config = None
+            coerced = True
+        if coerced:
+            logger.info("Coerced DynamicCache config to legacy static cache (use_cache=True)")
 
     def _resolve_attn_impl(self) -> Optional[str]:
         """Optional attention implementation override."""
@@ -416,11 +417,6 @@ class ModelBackend:
             and self.device.startswith("cuda")
         )
         self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None
-        if getattr(self, "uses_dynamic_cache", False):
-            if self.cuda_graph_enabled or self.decode_graph_enabled:
-                logger.info("Disabling CUDA graph capture because model uses DynamicCache")
-            self.cuda_graph_enabled = False
-            self.decode_graph_enabled = False
 
     def _init_generation_config(self) -> None:
         self.aggressive_max_new_tokens = self._flag_from_env("AGGRESSIVE_MAX_NEW_TOKENS", True)
