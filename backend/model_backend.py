@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -94,49 +94,34 @@ def resolve_model_path(model_name: str) -> str:
 class ModelBackend:
     """Backend that handles model/tokenizer loading and forward passes."""
 
-    def __init__(self, model_name: str, device: str, compile_model: bool = False) -> None:
-        compile_model = compile_model or os.getenv("COMPILE_MODEL", "0") == "1"
+    def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
         configure_torch(device)
         model_path = resolve_model_path(model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token is not None:
-            # Align pad with EOS so we can build explicit attention masks.
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(model_path)
-        self.model = maybe_compile_model(self.model, device=device, enabled=compile_model)
-        self.model.to(device)
-        self.model.eval()
 
         self.device = device
-        # Simple LRU caches for tokenization and prefill KV reuse.
-        self.token_cache_size = int(os.getenv("TOKEN_CACHE_SIZE", "32"))
-        self.prefill_cache_size = int(os.getenv("PREFILL_CACHE_SIZE", "8"))
-        self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
-        self.prefill_cache: OrderedDict[str, Tuple[int, Any]] = OrderedDict()
-        self.decode_buffer_enabled = os.getenv("DECODE_BUFFER", "1") != "0"
-        self._decode_buffer = torch.empty(
-            (1, 1), device=self.device, dtype=torch.long
-        ) if self.decode_buffer_enabled else None
-        eos_id = (
-            self.tokenizer.eos_token_id
-            if self.tokenizer.eos_token_id is not None
-            else self.tokenizer.sep_token_id
-        )
-        if eos_id is None:
-            eos_id = self.tokenizer.pad_token_id
-        if eos_id is None:
-            eos_id = 0
-        self.eos_token_id = eos_id
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = self.eos_token_id
-        if self.model.generation_config.pad_token_id is None:
-            self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
+        compile_enabled = self._flag_from_env("COMPILE_MODEL", default=compile_model)
+        self.tensor_parallel_size = self._resolve_tensor_parallel_size()
+        use_tensor_parallel = self._can_use_tensor_parallel()
+        model_kwargs = self._tensor_parallel_kwargs(use_tensor_parallel)
+
+        self.tokenizer = self._load_tokenizer(model_path)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        self.model = maybe_compile_model(self.model, device=device, enabled=compile_enabled)
+
+        if use_tensor_parallel:
+            # Use a canonical device for tensor placement when the model is sharded.
+            self.device = "cuda:0"
+        else:
+            self.model.to(self.device)
+        self.model.eval()
+
+        self._init_caches()
+        self._init_decode_buffer()
+        self._init_cuda_graph_settings()
+        self._init_generation_config()
 
         logger.info(
-            "Model backend ready: model=%s device=%s eos_token_id=%s",
-            model_name,
-            device,
-            self.eos_token_id,
+            "Model backend ready: model=%s device=%s eos_token_id=%s", model_name, device, self.eos_token_id
         )
 
     # ------------------------------------------------------------------
@@ -167,6 +152,38 @@ class ModelBackend:
     # Streaming-friendly forward passes (prefill + decode)
     # ------------------------------------------------------------------
 
+    def _get_prefill_graph(self, seq_len: int):
+        if not self.cuda_graph_enabled or seq_len > self.cuda_graph_max_seq_len:
+            return None
+        if seq_len in self._prefill_graphs:
+            graph = self._prefill_graphs.pop(seq_len)
+            self._prefill_graphs[seq_len] = graph
+            return graph
+        sample_ids = torch.zeros((1, seq_len), device=self.device, dtype=torch.long)
+        try:
+            graph = torch.cuda.make_graphed_callables(
+                self.model, (sample_ids,), {"use_cache": True}
+            )
+            self._prefill_graphs[seq_len] = graph
+            if len(self._prefill_graphs) > 4:
+                self._prefill_graphs.pop(next(iter(self._prefill_graphs)))
+            logger.info("Captured CUDA graph for prefill seq_len=%d", seq_len)
+            return graph
+        except Exception as exc:  # pragma: no cover - best-effort path
+            logger.warning("Failed to capture CUDA graph for seq_len=%d (%s)", seq_len, exc)
+            self.cuda_graph_enabled = False
+            return None
+
+    def _prefill_call(self, input_ids: torch.Tensor, past_key_values: Any | None):
+        graph = None if past_key_values is not None else self._get_prefill_graph(input_ids.shape[1])
+        auto_ctx, inf_ctx = inference_context(self.device)
+        with auto_ctx, inf_ctx:
+            if graph is not None:
+                return graph(input_ids=input_ids, use_cache=True)
+            return self.model(
+                input_ids=input_ids, past_key_values=past_key_values, use_cache=True
+            )
+
     def prefill_forward(self, prompt_ids: List[int]) -> Tuple[int, Any]:
         """Run the prefill (first) forward pass with KV cache enabled."""
         input_ids = torch.as_tensor(prompt_ids, device=self.device).unsqueeze(0)
@@ -175,31 +192,29 @@ class ModelBackend:
             input_ids.shape[1],
             self.device,
         )
+        cache_key, cached_kv = self._maybe_get_prefill_cache(prompt_ids)
+        if cached_kv is not None:
+            return cache_key, cached_kv
 
-        prompt_key = None
-        if self.prefill_cache_size > 0:
-            prompt_key = ",".join(str(i) for i in prompt_ids)
-            if prompt_key in self.prefill_cache:
-                first_token_id, cached_kv = self.prefill_cache.pop(prompt_key)
-                self.prefill_cache[prompt_key] = (first_token_id, cached_kv)
-                logger.info(
-                    "Prefill cache hit for seq_len=%d (first_token_id=%d)",
-                    input_ids.shape[1],
-                    first_token_id,
-                )
-                return int(first_token_id), cached_kv
+        prefix_hit = self._maybe_get_prefix_cache(prompt_ids)
 
-        auto_ctx, inf_ctx = inference_context(self.device)
-        with auto_ctx, inf_ctx:
-            outputs = self.model(input_ids=input_ids, use_cache=True)
+        if prefix_hit is not None:
+            tokens, cached_kv = prefix_hit
+            remaining_ids = torch.as_tensor(
+                prompt_ids[len(tokens) :], device=self.device
+            ).unsqueeze(0)
+            logger.info(
+                "Prefix cache hit for seq_len=%d using prefix_len=%d", len(prompt_ids), len(tokens)
+            )
+            outputs = self._prefill_call(remaining_ids, past_key_values=cached_kv)
+        else:
+            outputs = self._prefill_call(input_ids, past_key_values=None)
         logits = outputs.logits[:, -1, :]
         first_token_id = int(torch.argmax(logits, dim=-1).item())
         kv_cache = outputs.past_key_values
 
-        if prompt_key is not None:
-            self.prefill_cache[prompt_key] = (first_token_id, kv_cache)
-            if len(self.prefill_cache) > self.prefill_cache_size:
-                self.prefill_cache.popitem(last=False)
+        self._update_prefill_cache(prompt_ids, first_token_id, kv_cache)
+        self._update_prefix_cache(prompt_ids, kv_cache)
         logger.info(
             "Prefill produced first_token_id=%d (text=%r)",
             first_token_id,
@@ -234,6 +249,132 @@ class ModelBackend:
             self.decode_tokens([next_token_id]),
         )
         return next_token_id, new_kv_cache
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _flag_from_env(self, name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value != "0"
+
+    def _resolve_tensor_parallel_size(self) -> int:
+        env_value = os.getenv("TENSOR_PARALLEL_SIZE")
+        if env_value is not None:
+            return int(env_value)
+        if torch.cuda.is_available():
+            return max(1, torch.cuda.device_count())
+        return 1
+
+    def _can_use_tensor_parallel(self) -> bool:
+        return (
+            self.tensor_parallel_size > 1
+            and torch.cuda.is_available()
+            and torch.cuda.device_count() >= self.tensor_parallel_size
+        )
+
+    def _tensor_parallel_kwargs(self, use_tensor_parallel: bool) -> Dict[str, Any]:
+        if use_tensor_parallel:
+            logger.info(
+                "Loading model with tensor parallelism across %d GPUs", self.tensor_parallel_size
+            )
+            return {"device_map": "auto"}
+        if self.tensor_parallel_size > 1:
+            logger.warning(
+                "Requested tensor parallelism (TENSOR_PARALLEL_SIZE=%d) but found only %d CUDA devices",
+                self.tensor_parallel_size,
+                torch.cuda.device_count(),
+            )
+        return {}
+
+    def _load_tokenizer(self, model_path: str):
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        return tokenizer
+
+    def _init_caches(self) -> None:
+        # Simple LRU caches for tokenization and prefill KV reuse.
+        self.token_cache_size = int(os.getenv("TOKEN_CACHE_SIZE", "32"))
+        self.prefill_cache_size = int(os.getenv("PREFILL_CACHE_SIZE", "8"))
+        self.enable_prefix_cache = self._flag_from_env("PREFIX_CACHE", default=True)
+        self.prefix_cache_size = int(os.getenv("PREFIX_CACHE_SIZE", "16"))
+        self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
+        self.prefill_cache: OrderedDict[str, Tuple[int, Any]] = OrderedDict()
+        self.prefix_cache: OrderedDict[Tuple[int, ...], Any] = OrderedDict()
+
+    def _init_decode_buffer(self) -> None:
+        self.decode_buffer_enabled = self._flag_from_env("DECODE_BUFFER", default=True)
+        self._decode_buffer = (
+            torch.empty((1, 1), device=self.device, dtype=torch.long)
+            if self.decode_buffer_enabled
+            else None
+        )
+
+    def _init_cuda_graph_settings(self) -> None:
+        self.cuda_graph_enabled = (
+            self._flag_from_env("ENABLE_CUDA_GRAPH", default=True)
+            and self.device.startswith("cuda")
+        )
+        self.cuda_graph_max_seq_len = int(os.getenv("CUDA_GRAPH_MAX_SEQ_LEN", "512"))
+        self._prefill_graphs: Dict[int, Any] = {}
+
+    def _init_generation_config(self) -> None:
+        eos_id = (
+            self.tokenizer.eos_token_id
+            if self.tokenizer.eos_token_id is not None
+            else self.tokenizer.sep_token_id
+        )
+        if eos_id is None:
+            eos_id = self.tokenizer.pad_token_id
+        if eos_id is None:
+            eos_id = 0
+        self.eos_token_id = eos_id
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.eos_token_id
+        if self.model.generation_config.pad_token_id is None:
+            self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
+
+    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> Tuple[int | None, Any | None]:
+        if self.prefill_cache_size <= 0:
+            return None, None
+        prompt_key = ",".join(str(i) for i in prompt_ids)
+        if prompt_key not in self.prefill_cache:
+            return None, None
+        first_token_id, cached_kv = self.prefill_cache.pop(prompt_key)
+        self.prefill_cache[prompt_key] = (first_token_id, cached_kv)
+        logger.info(
+            "Prefill cache hit for seq_len=%d (first_token_id=%d)", len(prompt_ids), first_token_id
+        )
+        return int(first_token_id), cached_kv
+
+    def _maybe_get_prefix_cache(self, prompt_ids: List[int]) -> tuple[Tuple[int, ...], Any] | None:
+        if not (self.enable_prefix_cache and self.prefix_cache_size > 0):
+            return None
+        for tokens, cached_kv in reversed(self.prefix_cache.items()):
+            if len(tokens) < len(prompt_ids) and prompt_ids[: len(tokens)] == list(tokens):
+                self.prefix_cache.pop(tokens)
+                self.prefix_cache[tokens] = cached_kv
+                return tokens, cached_kv
+        return None
+
+    def _update_prefill_cache(self, prompt_ids: List[int], first_token_id: int, kv_cache: Any) -> None:
+        if self.prefill_cache_size <= 0:
+            return
+        prompt_key = ",".join(str(i) for i in prompt_ids)
+        self.prefill_cache[prompt_key] = (first_token_id, kv_cache)
+        if len(self.prefill_cache) > self.prefill_cache_size:
+            self.prefill_cache.popitem(last=False)
+
+    def _update_prefix_cache(self, prompt_ids: List[int], kv_cache: Any) -> None:
+        if not (self.enable_prefix_cache and self.prefix_cache_size > 0):
+            return
+        token_tuple = tuple(prompt_ids)
+        self.prefix_cache[token_tuple] = kv_cache
+        if len(self.prefix_cache) > self.prefix_cache_size:
+            self.prefix_cache.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Batched/non-streaming generation

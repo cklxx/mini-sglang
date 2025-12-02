@@ -1,6 +1,6 @@
 # mini-sglang
 
-A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks now compare real `sglang`, this mini stack, and a plain Hugging Face streaming baseline in both local and HTTP server modes.
+A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks now compare real `sglang`, this mini stack, and a plain Hugging Face streaming baseline in both local and HTTP server modes. For the full upstream project and docs, see [sglang on GitHub](https://github.com/sgl-project/sglang).
 
 ### Quickstart
 
@@ -15,6 +15,13 @@ python server_bench.py --max-new-tokens 128 "Hello mini-sglang"
 ```
 
 Both scripts default to the model in `MODEL_NAME` and allow overrides via `--model`. The server benchmark will start a local `sglang.Runtime` if you do not supply `--sglang-url`.
+
+### Performance levers (enabled by default)
+
+- **Prefix caching**: reuse prefill KV for repeated prompts (`PREFIX_CACHE=1`, `PREFIX_CACHE_SIZE=16`).
+- **Tensor parallel loading**: shard the model across available CUDA devices automatically (`TENSOR_PARALLEL_SIZE` defaults to GPU count).
+- **Torch compilation**: wrap the model with `torch.compile` unless disabled (`COMPILE_MODEL=0` to opt out, optional `COMPILE_MODE`).
+- **CUDA graphs for prefill**: capture and replay prefill shapes on CUDA by default (`ENABLE_CUDA_GRAPH=1`, `CUDA_GRAPH_MAX_SEQ_LEN=512`).
 
 ## Project layout
 ```
