@@ -20,7 +20,7 @@ Both scripts default to the model in `MODEL_NAME` and allow overrides via `--mod
 
 - **Caches**: prefix/prefill KV caches with radix longest-prefix lookup, LRU/LFU eviction, token budgets, page spill (`PAGE_TOKEN_BUDGET`), and manual seeding via `insert_prefix`. Chunked prefill on by default; legacy KV (`HF_USE_LEGACY_CACHE=1`) to avoid DynamicCache.
 - **Scheduling & backpressure**: round robin / fsfs / random / cache-aware dispatch (`SCHEDULER_MODE`), inflight caps (`MAX_INFLIGHT_TOTAL`, `MAX_INFLIGHT_PER_ENGINE`), adaptive `max_new_tokens` downscale under load, async prefix warmup (`WARM_PREFIXES`, `ASYNC_PREFILL_QUEUE`).
-- **Fast paths**: fast decode uses HF streaming (`ENGINE_FAST_DECODE=1`, default on non-CUDA), CUDA graphs for prefill/decode when safe (`ENABLE_CUDA_GRAPH`, `ENABLE_DECODE_CUDA_GRAPH`), and chunked prefill (`PREFILL_CHUNK_SIZE`).
+- **Fast paths**: CUDA graphs for prefill/decode when safe (`ENABLE_CUDA_GRAPH`, `ENABLE_DECODE_CUDA_GRAPH`) and chunked prefill (`PREFILL_CHUNK_SIZE`).
 - **Model loading**: tensor parallel (`TENSOR_PARALLEL_SIZE`), dtype override (`MODEL_DTYPE`/`TORCH_DTYPE`), attention impl (`ATTN_IMPL`), torch.compile (`COMPILE_MODEL`/`COMPILE_MODE`), aggressive context-safe `max_new_tokens` capping.
 - **Observability & control**: GET `/metrics` for scheduler/inflight/cache stats and rolling latency/throughput; per-request logs include cache hit/miss counters. Optional ZMQ control channel (`ZMQ_CONTROL=1`, `ZMQ_CONTROL_ENDPOINT`) supports metrics/warm commands.
 

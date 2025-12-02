@@ -41,8 +41,6 @@ class SGLangMiniEngine:
         self.decode_log_stride = decode_log_stride or int(
             os.getenv("DECODE_LOG_STRIDE", "32")
         )
-        # Default fast decode on; auto-disables if HF streamer unavailable.
-        self.use_fast_decode = os.getenv("ENGINE_FAST_DECODE", "1") != "0"
 
     def run_generate(
         self,
@@ -58,29 +56,10 @@ class SGLangMiniEngine:
             max_tokens = requested_tokens
 
         logger.info(
-            "Starting generation run | prompt_tokens=%d max_new_tokens=%d fast_decode=%s",
+            "Starting generation run | prompt_tokens=%d max_new_tokens=%d",
             len(prompt_ids),
             max_tokens,
-            self.use_fast_decode,
         )
-
-        if self.use_fast_decode:
-            text_chunks: list[str] = []
-
-            def _cb(delta: str) -> None:
-                text_chunks.append(delta)
-                stream_callback(delta)
-
-            try:
-                self.backend.generate_streaming_baseline(
-                    prompt_ids=prompt_ids,
-                    max_new_tokens=max_tokens,
-                    stream_callback=_cb,
-                )
-                return "".join(text_chunks)
-            except Exception as exc:
-                logger.warning("Fast decode path failed (%s); falling back to per-token loop", exc)
-                text_chunks.clear()
 
         state = RequestState(
             prompt_text=prompt,
