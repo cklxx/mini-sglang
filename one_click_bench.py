@@ -1,37 +1,50 @@
-"""One-click benchmark: sglang streaming vs HF streaming vs HTTP server.
+"""One-click benchmark: compare three server paths side by side.
 
-This mirrors sglang's bench mode in a minimal way for the HTTP server:
-- Hits the FastAPI server via TestClient to measure TTFB + throughput.
-- Compares sglang engine mode vs HF streaming baseline mode on the server.
-- Also times an in-process mini-sglang engine run (no HTTP) so learners can
-  see all three paths side by side.
+This mirrors sglang's bench_serving.py pattern in a minimal way:
+- Hits three streaming HTTP servers (sglang, HF baseline, mini-sglang) to log
+  TTFB and throughput.
+- Defaults to the in-process FastAPI app if no remote URLs are supplied, so you
+  can still see three server-style measurements locally.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import time
-from typing import Tuple
+from typing import Optional, Tuple
+
+import httpx
 
 from fastapi.testclient import TestClient
 
 from api.server import app, backend as server_backend
-from engine.engine import SGLangMiniEngine
 from config import MAX_NEW_TOKENS_DEFAULT
 from one_click_compare import ensure_dependencies
 
 
-def run_server_stream(prompt: str, max_new_tokens: int, mode: str) -> Tuple[str, float, float]:
-    client = TestClient(app)
+def run_server_stream(
+    prompt: str,
+    max_new_tokens: int,
+    mode: str,
+    server_url: Optional[str] = None,
+) -> Tuple[str, float, float]:
+    """Stream from either the in-process FastAPI app or a remote server.
+
+    This mirrors sglang's bench_serving.py pattern where three different
+    servers (sglang, HF baseline, and a mini-sglang deployment) are compared
+    head-to-head. If a server URL is provided we use HTTPX streaming; otherwise
+    we fall back to the local TestClient.
+    """
+
     payload = {"prompt": prompt, "max_new_tokens": max_new_tokens, "stream": True, "mode": mode}
 
     chunks: list[str] = []
     t_start = time.perf_counter()
     ttfb = None
 
-    with client.stream("POST", "/generate", json=payload, timeout=None) as resp:
-        resp.raise_for_status()
-        for raw_line in resp.iter_lines():
+    def handle_lines(lines) -> None:
+        nonlocal ttfb
+        for raw_line in lines:
             if not raw_line:
                 continue
             line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8")
@@ -44,34 +57,15 @@ def run_server_stream(prompt: str, max_new_tokens: int, mode: str) -> Tuple[str,
             elif msg.get("event") == "done":
                 break
 
-    ttfb = ttfb if ttfb is not None else time.perf_counter() - t_start
-    duration = time.perf_counter() - t_start
-    text = "".join(chunks)
-    tokens = len(server_backend.tokenize(text))
-    throughput = tokens / duration if duration > 0 else 0.0
-    return text, ttfb, throughput
-
-
-def run_engine_stream(prompt: str, max_new_tokens: int) -> Tuple[str, float, float]:
-    """Benchmark the in-process mini-sglang engine without HTTP overhead."""
-
-    engine = SGLangMiniEngine(
-        backend=server_backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
-    )
-
-    chunks: list[str] = []
-    t_start = time.perf_counter()
-    ttfb = None
-
-    def stream_callback(text_delta: str) -> None:
-        nonlocal ttfb
-        chunks.append(text_delta)
-        if ttfb is None:
-            ttfb = time.perf_counter() - t_start
-
-    engine.run_generate(
-        prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=stream_callback
-    )
+    if server_url:
+        with httpx.stream("POST", f"{server_url.rstrip('/')}/generate", json=payload, timeout=None) as resp:
+            resp.raise_for_status()
+            handle_lines(resp.iter_lines())
+    else:
+        client = TestClient(app)
+        with client.stream("POST", "/generate", json=payload, timeout=None) as resp:
+            resp.raise_for_status()
+            handle_lines(resp.iter_lines())
 
     ttfb = ttfb if ttfb is not None else time.perf_counter() - t_start
     duration = time.perf_counter() - t_start
@@ -79,10 +73,13 @@ def run_engine_stream(prompt: str, max_new_tokens: int) -> Tuple[str, float, flo
     tokens = len(server_backend.tokenize(text))
     throughput = tokens / duration if duration > 0 else 0.0
     return text, ttfb, throughput
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="One-click server benchmark (sglang vs HF baseline)")
+    parser = argparse.ArgumentParser(
+        description=(
+            "One-click server benchmark (sglang vs HF baseline vs mini-sglang), "
+            "mirroring sglang's bench_serving.py layout."
+        )
+    )
     parser.add_argument(
         "prompt",
         nargs="?",
@@ -93,6 +90,21 @@ def main() -> None:
         type=int,
         default=MAX_NEW_TOKENS_DEFAULT,
         help="Token budget for all modes",
+    )
+    parser.add_argument(
+        "--sglang-url",
+        help="Optional remote sglang server URL (defaults to local FastAPI app)",
+    )
+    parser.add_argument(
+        "--hf-url",
+        help="Optional remote HF baseline server URL (defaults to local FastAPI app)",
+    )
+    parser.add_argument(
+        "--mini-url",
+        help=(
+            "Optional remote mini-sglang server URL. If omitted, this reuses the "
+            "local FastAPI app so all three server paths are exercised."
+        ),
     )
     parser.add_argument(
         "--no-bootstrap",
@@ -108,13 +120,16 @@ def main() -> None:
     print(f"Prompt: {args.prompt!r}\n")
 
     sv_text, sv_ttfb, sv_tp = run_server_stream(
-        args.prompt, args.max_new_tokens, mode="sglang"
+        args.prompt, args.max_new_tokens, mode="sglang", server_url=args.sglang_url
     )
     sv_hf_text, sv_hf_ttfb, sv_hf_tp = run_server_stream(
-        args.prompt, args.max_new_tokens, mode="hf"
+        args.prompt, args.max_new_tokens, mode="hf", server_url=args.hf_url
     )
-    engine_text, engine_ttfb, engine_tp = run_engine_stream(
-        args.prompt, args.max_new_tokens
+    mini_text, mini_ttfb, mini_tp = run_server_stream(
+        args.prompt,
+        args.max_new_tokens,
+        mode="sglang",
+        server_url=args.mini_url if args.mini_url is not None else args.sglang_url,
     )
 
     print("Server results (FastAPI /generate):")
@@ -125,12 +140,12 @@ def main() -> None:
         f"- HTTP server (hf baseline): throughput={sv_hf_tp:.2f} tok/s  TTFB={sv_hf_ttfb:.3f}s"
     )
     print(
-        f"- Engine (mini-sglang):      throughput={engine_tp:.2f} tok/s  TTFB={engine_ttfb:.3f}s"
+        f"- HTTP server (mini-sglang): throughput={mini_tp:.2f} tok/s  TTFB={mini_ttfb:.3f}s"
     )
     print("\nPreviews:")
     print(f"- server (sglang): {sv_text[:120]!r}")
     print(f"- server (hf): {sv_hf_text[:120]!r}")
-    print(f"- engine (mini): {engine_text[:120]!r}")
+    print(f"- server (mini): {mini_text[:120]!r}")
 
 
 if __name__ == "__main__":
