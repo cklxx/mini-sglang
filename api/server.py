@@ -71,7 +71,7 @@ def generate(request: GenerateRequest):
         raise HTTPException(
             status_code=400,
             detail=(
-                "HTTP API is streaming-only. Use benchmark.py or one_click_compare.py "
+                "HTTP API is streaming-only. Use local_bench.py or server_bench.py "
                 "to compare against vanilla generate()."
             ),
         )
