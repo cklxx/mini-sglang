@@ -19,8 +19,9 @@ dependencies = [
     "sglang==0.5.2",
     "modelscope",
     "pybase64",
+    "pyzmq",
 ]
 
 [tool.setuptools]
-packages = ["api", "backend", "engine"]
+packages = ["api", "backend", "engine", "ipc"]
 py-modules = ["config", "local_bench", "server_bench", "cli_demo", "smoke_test", "optimizations", "multi_device"]

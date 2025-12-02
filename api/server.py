@@ -22,6 +22,7 @@ from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
 from multi_device import EnginePool
 from optimizations import warmup_engine
+from ipc.zmq_control import start_control_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,13 @@ def _warm_server() -> None:
         if prompts:
             logger.info("Warming %d prefixes into cache", len(prompts))
             pool.warm_prefixes(prompts)
+    if os.getenv("ZMQ_CONTROL", "0") != "0":
+        endpoint = os.getenv("ZMQ_CONTROL_ENDPOINT", "tcp://127.0.0.1:5557")
+        logger.info("Starting ZMQ control server on %s", endpoint)
+        start_control_server(
+            endpoint=endpoint,
+            handler=lambda req: _handle_control(req),
+        )
     logger.info("Server warmup done")
 
 
@@ -157,3 +165,14 @@ def generate(request: GenerateRequest):
 def metrics():
     """Lightweight JSON metrics for cache hits/misses and inflight counts."""
     return JSONResponse(pool.metrics())
+
+
+def _handle_control(req: dict) -> dict:
+    cmd = (req.get("cmd") or "").lower()
+    if cmd == "metrics":
+        return pool.metrics()
+    if cmd == "warm":
+        tokens = int(req.get("tokens", 8))
+        pool.warm(tokens)
+        return {"ok": True, "warmed_tokens": tokens}
+    return {"error": "unknown_command"}

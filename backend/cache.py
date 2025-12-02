@@ -21,7 +21,9 @@ class KVPageManager:
     def add(self, kv_cache: Any, tokens: int) -> str:
         handle = f"kv_{self._next_id}"
         self._next_id += 1
-        self._store[handle] = (kv_cache, tokens)
+        pages = max(1, -(-tokens // self.page_size))  # ceil divide
+        stored_tokens = pages * self.page_size
+        self._store[handle] = (kv_cache, stored_tokens)
         self._trim()
         return handle
 
