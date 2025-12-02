@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
+import os
 import time
-from typing import Tuple
+from typing import Any, Tuple, cast
 
 import sglang as sgl
 
@@ -15,7 +17,7 @@ from engine.engine import SGLangMiniEngine
 
 @sgl.function
 def _sglang_single_turn(s, prompt: str):
-    s += sgl.user(prompt)
+    s += sgl.user(cast(Any, prompt))
     s += sgl.assistant(sgl.gen("answer"))
 
 
@@ -33,7 +35,8 @@ def run_sglang_runtime(
 
     tokenizer = runtime.get_tokenizer()
     start = time.perf_counter()
-    state = _sglang_single_turn.run(
+    sgl_fn = cast(Any, _sglang_single_turn)
+    state = sgl_fn.run(
         prompt,
         backend=runtime,
         max_new_tokens=max_new_tokens,
@@ -79,6 +82,11 @@ def run_hf_streaming(
     duration = time.perf_counter() - start
     tokens = len(backend.tokenize(text)) if duration > 0 else 0
     return text, duration, tokens
+
+
+def _missing_sglang_runtime_deps() -> list[str]:
+    required = ("uvloop", "psutil", "triton")
+    return [mod for mod in required if importlib.util.find_spec(mod) is None]
 
 
 def parse_args() -> argparse.Namespace:
@@ -134,9 +142,25 @@ def main() -> None:
         f"Benchmarking prompt={args.prompt!r} | model={model_name} | max_new_tokens={token_budget}"
     )
 
-    sg_text, sg_duration, sg_tokens = run_sglang_runtime(
-        prompt=args.prompt, max_new_tokens=token_budget, model_name=model_name
-    )
+    skip_sg = os.getenv("SKIP_SGLANG_RUNTIME", "0") == "1"
+    sg_error: str | None = "Skipped via SKIP_SGLANG_RUNTIME" if skip_sg else None
+    sg_result: Tuple[str, float, int] | None = None
+    sg_text = ""
+    if not skip_sg:
+        missing = _missing_sglang_runtime_deps()
+        if missing:
+            sg_error = (
+                "Missing sglang runtime deps: " + ", ".join(sorted(missing)) + "; "
+                "install the extras or set SKIP_SGLANG_RUNTIME=1"
+            )
+        else:
+            try:
+                sg_result = run_sglang_runtime(
+                    prompt=args.prompt, max_new_tokens=token_budget, model_name=model_name
+                )
+            except Exception as exc:  # pragma: no cover - best-effort guard
+                sg_error = f"sglang Runtime failed: {exc}"
+
     mini_text, mini_duration, mini_tokens = run_mini_sglang(
         engine=engine,
         prompt=args.prompt,
@@ -148,10 +172,14 @@ def main() -> None:
     )
 
     print("\nLocal results:")
-    print(
-        f"- sglang Runtime: tokens={sg_tokens} duration={sg_duration:.3f}s "
-        f"throughput={sg_tokens/sg_duration if sg_duration>0 else 0:.2f} tok/s"
-    )
+    if sg_result is not None:
+        sg_text, sg_duration, sg_tokens = sg_result
+        print(
+            f"- sglang Runtime: tokens={sg_tokens} duration={sg_duration:.3f}s "
+            f"throughput={sg_tokens/sg_duration if sg_duration>0 else 0:.2f} tok/s"
+        )
+    else:
+        print(f"- sglang Runtime: skipped ({sg_error})")
     print(
         f"- mini-sglang:    tokens={mini_tokens} duration={mini_duration:.3f}s "
         f"throughput={mini_tokens/mini_duration if mini_duration>0 else 0:.2f} tok/s"
@@ -162,7 +190,10 @@ def main() -> None:
     )
 
     print("\nPreviews:")
-    print(f"- sglang:   {sg_text[:120]!r}")
+    if sg_result is not None:
+        print(f"- sglang:   {sg_text[:120]!r}")
+    else:
+        print(f"- sglang:   [skipped]")
     print(f"- mini:     {mini_text[:120]!r}")
     print(f"- hf:       {hf_text[:120]!r}")
 

@@ -45,6 +45,12 @@ def maybe_compile_model(model: Any, device: str, enabled: bool) -> Any:
 
     if not enabled:
         return model
+
+    # torch.compile is most stable on CUDA; avoid on MPS/CPU unless explicitly forced.
+    if device != "cuda" and os.getenv("FORCE_COMPILE_ON_NONCUDA") != "1":
+        logger.info("Skipping torch.compile on non-CUDA device=%s", device)
+        return model
+
     compile_mode = os.getenv("COMPILE_MODE", "reduce-overhead")
     try:
         compiled = torch.compile(model, mode=compile_mode)

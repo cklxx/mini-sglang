@@ -4,5 +4,9 @@ transformers
 torch
 sentencepiece
 httpx
-sglang
+pybase64
+sglang==0.5.2
 modelscope
+orjson
+uvloop; sys_platform != "win32"
+psutil

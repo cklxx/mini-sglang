@@ -4,28 +4,44 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from typing import Optional, Tuple
+from typing import Any, Protocol, Sequence, Tuple, cast
 
 import httpx
-import sglang as sgl
+import sglang as _sgl
 from fastapi.testclient import TestClient
 
 from api.server import app as mini_app, backend as mini_backend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 
 
-def _count_tokens(text: str, tokenizer: Optional[object]) -> int:
+class _EncodesText(Protocol):
+    def encode(self, text: str) -> Sequence[int]:
+        ...
+
+
+class _CallableTokenizer(Protocol):
+    def __call__(self, text: str) -> Sequence[int]:
+        ...
+
+
+TokenizerLike = _EncodesText | _CallableTokenizer
+sgl = cast(Any, _sgl)
+
+
+def _count_tokens(text: str, tokenizer: TokenizerLike | None) -> int:
     if tokenizer is None:
         return len(mini_backend.tokenize(text))
     if hasattr(tokenizer, "encode"):
-        return len(tokenizer.encode(text))
+        encoder = cast(_EncodesText, tokenizer)
+        return len(encoder.encode(text))
     if callable(tokenizer):
-        return len(tokenizer(text))
+        token_fn = cast(_CallableTokenizer, tokenizer)
+        return len(token_fn(text))
     return len(mini_backend.tokenize(text))
 
 
 def stream_sglang_http(
-    *, prompt: str, max_new_tokens: int, server_url: str, tokenizer: Optional[object]
+    *, prompt: str, max_new_tokens: int, server_url: str, tokenizer: TokenizerLike | None
 ) -> Tuple[str, float, float, int]:
     payload = {
         "text": prompt,
@@ -35,7 +51,7 @@ def stream_sglang_http(
 
     chunks: list[str] = []
     start = time.perf_counter()
-    ttfb: Optional[float] = None
+    ttfb: float | None = None
     prev_len = 0
 
     with httpx.stream(
@@ -82,7 +98,7 @@ def stream_mini_server(
 
     chunks: list[str] = []
     start = time.perf_counter()
-    ttfb: Optional[float] = None
+    ttfb: float | None = None
     client = TestClient(mini_app)
 
     with client.stream("POST", "/generate", json=payload, timeout=None) as resp:
@@ -142,18 +158,21 @@ def main() -> None:
     token_budget = args.max_new_tokens
     model_name = args.model or MODEL_NAME
 
-    runtime: Optional[sgl.Runtime] = None
-    runtime_tokenizer = None
-    sglang_url = args.sglang_url.rstrip("/") if args.sglang_url else None
-    if sglang_url is None:
-        runtime = sgl.Runtime(
+    runtime: Any = None
+    runtime_tokenizer: TokenizerLike | None = None
+    sglang_url: str
+    sgl_runtime_cls: Any = sgl.Runtime
+    if args.sglang_url:
+        sglang_url = args.sglang_url.rstrip("/")
+    else:
+        runtime = sgl_runtime_cls(
             model_path=model_name,
             tokenizer_path=model_name,
             trust_remote_code=True,
             log_level="error",
         )
-        sglang_url = runtime.url
-        runtime_tokenizer = runtime.get_tokenizer()
+        sglang_url = str(runtime.url)
+        runtime_tokenizer = cast(TokenizerLike, runtime.get_tokenizer())
 
     try:
         sg_text, sg_ttfb, sg_duration, sg_tokens = stream_sglang_http(

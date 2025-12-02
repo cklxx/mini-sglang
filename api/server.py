@@ -10,7 +10,7 @@ import logging
 import os
 from queue import SimpleQueue
 from threading import Thread
-from typing import Any, Dict, Generator, Optional
+from typing import Generator, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -46,6 +46,12 @@ def _warm_server() -> None:
     warm_tokens = min(16, MAX_NEW_TOKENS_DEFAULT)
     logger.info("Server warmup starting | tokens=%d model=%s", warm_tokens, MODEL_NAME)
     pool.warm(warm_tokens)
+    warm_prefixes = os.getenv("WARM_PREFIXES")
+    if warm_prefixes:
+        prompts = [p for p in warm_prefixes.split("||") if p.strip()]
+        if prompts:
+            logger.info("Warming %d prefixes into cache", len(prompts))
+            pool.warm_prefixes(prompts)
     logger.info("Server warmup done")
 
 
@@ -81,50 +87,55 @@ def generate(request: GenerateRequest):
         raise HTTPException(status_code=400, detail="mode must be 'sglang' or 'hf'")
 
     def event_stream() -> Generator[bytes, None, None]:
-        queue: SimpleQueue[object] = SimpleQueue()
-        sentinel = object()
+        queue: SimpleQueue[bytes] = SimpleQueue()
+        sentinel = b"__mini_sglang_done__"
+        send_count = 0
 
         def stream_callback(text_delta: str) -> None:
-            chunk: Dict[str, Any] = {"text_delta": text_delta}
+            nonlocal send_count
+            chunk: dict[str, str] = {"text_delta": text_delta}
             queue.put((json.dumps(chunk) + "\n").encode("utf-8"))
-            if len(chunk.get("text_delta", "")) > 0:
-                stream_callback.count = getattr(stream_callback, "count", 0) + 1
-                if stream_callback.count <= 2 or stream_callback.count % STREAM_LOG_STRIDE == 0:
-                    logger.info(
-                        "Streamed chunk %03d (mode=%s): %r",
-                        stream_callback.count,
-                        mode,
-                        chunk,
-                    )
+            if text_delta:
+                send_count += 1
+                if send_count <= 2 or send_count % STREAM_LOG_STRIDE == 0:
+                    logger.info("Streamed chunk %03d (mode=%s): %r", send_count, mode, chunk)
 
         def run_engine() -> None:
-            engine = pool.pick()
-            if mode == "sglang":
-                engine.run_generate(
-                    prompt=request.prompt,
-                    max_new_tokens=request.max_new_tokens,
-                    stream_callback=stream_callback,
+            prompt_ids = pool.primary_backend.tokenize(request.prompt)
+            requested_tokens = request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
+            max_tokens = backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
+            engine, lease = pool.pick(prompt_ids=prompt_ids)
+            try:
+                if mode == "sglang":
+                    engine.run_generate(
+                        prompt=request.prompt,
+                        max_new_tokens=max_tokens,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    engine.backend.generate_streaming_baseline(
+                        prompt_ids=prompt_ids,
+                        max_new_tokens=max_tokens or MAX_NEW_TOKENS_DEFAULT,
+                        stream_callback=stream_callback,
+                    )
+                queue.put(json.dumps({"event": "done"}).encode("utf-8") + b"\n")
+                queue.put(sentinel)
+                logger.info(
+                    "Generation thread completed | prompt_len=%d mode=%s cache=%s",
+                    len(request.prompt),
+                    mode,
+                    engine.backend.cache_metrics(),
                 )
-            else:
-                prompt_ids = engine.backend.tokenize(request.prompt)
-                engine.backend.generate_streaming_baseline(
-                    prompt_ids=prompt_ids,
-                    max_new_tokens=request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT,
-                    stream_callback=stream_callback,
-                )
-            queue.put(json.dumps({"event": "done"}).encode("utf-8") + b"\n")
-            queue.put(sentinel)
-            logger.info(
-                "Generation thread completed for prompt length=%d mode=%s", len(request.prompt), mode
-            )
+            finally:
+                pool.release(lease)
 
         thread = Thread(target=run_engine, daemon=True)
         thread.start()
 
         while True:
             item = queue.get()
-            if item is sentinel:
+            if item == sentinel:
                 break
-            yield item  # type: ignore[misc]
+            yield item
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

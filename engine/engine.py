@@ -49,8 +49,11 @@ class SGLangMiniEngine:
         stream_callback: Callable[[str], None],
     ) -> str:
         """Generate text using prefill + decode while invoking a stream callback."""
-        max_tokens = max_new_tokens or self.max_new_tokens_default
         prompt_ids = self.backend.tokenize(prompt)
+        requested_tokens = max_new_tokens or self.max_new_tokens_default
+        max_tokens = self.backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
+        if max_tokens is None:
+            max_tokens = requested_tokens
 
         logger.info(
             "Starting generation run | prompt_tokens=%d max_new_tokens=%d",
@@ -82,6 +85,19 @@ class SGLangMiniEngine:
             for step_index in range(state.max_new_tokens - 1):
                 if state.finished:
                     break
+                if self.backend.max_context_length is not None:
+                    used = len(state.prompt_ids) + len(state.generated_ids)
+                    budget_left = self.backend.max_context_length - used - self.backend.max_context_margin
+                    if budget_left <= 0:
+                        logger.info(
+                            "Stopping decode to avoid context overflow "
+                            "(used=%d, max_ctx=%d, margin=%d)",
+                            used,
+                            self.backend.max_context_length,
+                            self.backend.max_context_margin,
+                        )
+                        state.finished = True
+                        break
                 last_token_id = state.generated_ids[-1]
                 next_token_id, kv_cache = self.backend.decode_forward(
                     last_token_id, state.kv_cache

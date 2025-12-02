@@ -16,6 +16,9 @@ dependencies = [
     "torch",
     "sentencepiece",
     "httpx",
+    "sglang==0.5.2",
+    "modelscope",
+    "pybase64",
 ]
 
 [tool.setuptools]

@@ -19,15 +19,27 @@ Both scripts default to the model in `MODEL_NAME` and allow overrides via `--mod
 ### Performance levers (enabled by default)
 
 - **Prefix caching**: reuse prefill KV for repeated prompts (`PREFIX_CACHE=1`, `PREFIX_CACHE_SIZE=16`).
+- **Longest-prefix matching**: prefix cache picks the deepest matching prefix with a radix-style lookup (O(prefix length)) instead of scanning the cache.
+- **Prefix cache controls**: skip caching overly long prompts (`PREFIX_CACHE_MAX_TOKENS`, default 4096), cap total cached tokens (`PREFIX_CACHE_TOKEN_BUDGET`, default 65536), and allow manual pre-insertion via `ModelBackend.insert_prefix(...)`.
+- **Prefill cache controls**: LRU by entry count (`PREFILL_CACHE_SIZE`, default 8) plus an optional total token budget (`PREFILL_CACHE_TOKEN_BUDGET`, default 65536).
+- **Scheduler modes**: pick generation engine via round robin (`SCHEDULER_MODE=rr`, default), lowest-load-first (`fsfs`), random (`random`), or cache-aware (`cache_aware`) which selects the engine with the deepest prefix cache hit and breaks ties by lower load.
+- **Backpressure limits**: cap concurrency with `MAX_INFLIGHT_TOTAL` (all engines) and `MAX_INFLIGHT_PER_ENGINE` (per device). Requests block until capacity frees.
+- **Prefix warmup**: optionally prefill and cache common prompts at server startup via `WARM_PREFIXES="prompt1||prompt2"`.
+- **Cache stats**: per-request logs include prefill/prefix cache hit/miss counters for quick observability.
+- **Load dtype control**: optionally set `MODEL_DTYPE`/`TORCH_DTYPE` to `fp16`/`bf16`/`fp32` (or `auto` to pick float16 on CUDA/MPS) when loading the model.
+- **CUDA graphs for decode**: optionally capture the 1-token decode step (`ENABLE_DECODE_CUDA_GRAPH=1`, default) to reduce Python overhead on CUDA.
 - **Tensor parallel loading**: shard the model across available CUDA devices automatically (`TENSOR_PARALLEL_SIZE` defaults to GPU count).
 - **Torch compilation**: wrap the model with `torch.compile` unless disabled (`COMPILE_MODEL=0` to opt out, optional `COMPILE_MODE`).
 - **CUDA graphs for prefill**: capture and replay prefill shapes on CUDA by default (`ENABLE_CUDA_GRAPH=1`, `CUDA_GRAPH_MAX_SEQ_LEN=512`).
+- **Chunked prefill (opt-in)**: break long prompts into smaller prefill chunks to lower peak memory and improve graph reuse on very long prompts (`CHUNKED_PREFILL=1`, `PREFILL_CHUNK_SIZE=512`).
+- **Aggressive max_new_tokens capping**: automatically cap `max_new_tokens` to the model context window minus a small margin (`AGGRESSIVE_MAX_NEW_TOKENS=1`, `MAX_CONTEXT_MARGIN=16`).
 
 ## Project layout
 ```
 requirements.txt
 config.py              # (sglang global config analogue) model choice + device selection
 backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
+backend/cache.py         # cache utilities (prefill/prefix LRU + radix index)
 engine/engine.py       # (sglang engine analogue) prefill + decode orchestration
 api/server.py          # (sglang API analogue) FastAPI server exposing POST /generate
 cli_demo.py            # Minimal client to stream tokens in a terminal
