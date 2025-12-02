@@ -24,6 +24,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
+from fastapi.testclient import TestClient
+
+from api.server import app as server_app, backend as server_backend
 from optimizations import warmup_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -59,6 +62,25 @@ REQUIREMENTS_PATH = Path(__file__).resolve().parent / "requirements.txt"
 # Bootstrap helpers (kept stdlib-only so they work before deps are installed)
 # ---------------------------------------------------------------------------
 
+def has_cuda_driver() -> bool:
+    """Detect whether a CUDA-capable driver is present on the host.
+
+    We keep this check lightweight so it works even before torch is installed.
+    """
+
+    try:
+        probe = subprocess.run(
+            ["nvidia-smi", "-L"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+
+    return probe.returncode == 0
+
+
 def ensure_dependencies() -> None:
     """Install dependencies if missing, preferring `uv pip` for speed.
 
@@ -67,6 +89,11 @@ def ensure_dependencies() -> None:
     present, it will optionally auto-install uv first so that the remaining
     install uses the faster resolver. Set ``AUTO_INSTALL_UV=0`` to skip uv
     bootstrapping.
+
+    Torch wheels default to CUDA when a driver is available. To force CPU-only
+    installs, set ``FORCE_CPU_TORCH=1``. To allow CUDA downloads even when the
+    script cannot detect the driver (e.g., inside some containers), set
+    ``ALLOW_CUDA_TORCH=1``.
     """
 
     needed = []
@@ -98,11 +125,15 @@ def ensure_dependencies() -> None:
     runner: str
 
     index_url = os.environ.get("TORCH_INDEX_URL")
-    # Default to CPU wheels on Linux so CPU-only machines avoid CUDA downloads.
+    # Default to CPU wheels only when no CUDA driver is visible to avoid
+    # accidentally installing CPU torch on GPU hosts.
+    force_cpu = os.environ.get("FORCE_CPU_TORCH") == "1"
+    allow_cuda = os.environ.get("ALLOW_CUDA_TORCH") is not None
     if (
         index_url is None
         and platform.system() == "Linux"
-        and os.environ.get("ALLOW_CUDA_TORCH") is None
+        and not allow_cuda
+        and (force_cpu or not has_cuda_driver())
     ):
         index_url = "https://download.pytorch.org/whl/cpu"
 
@@ -321,6 +352,62 @@ def run_baseline_streaming_chat(
     return history, total_duration
 
 
+def run_server_stream(
+    *, client: TestClient, prompt: str, max_new_tokens: int, mode: str
+) -> Tuple[str, float, float, float]:
+    payload = {
+        "prompt": prompt,
+        "max_new_tokens": max_new_tokens,
+        "stream": True,
+        "mode": mode,
+    }
+
+    chunks: list[str] = []
+    t_start = time.perf_counter()
+    ttfb: Optional[float] = None
+
+    with client.stream("POST", "/generate", json=payload, timeout=None) as resp:
+        resp.raise_for_status()
+        for raw_line in resp.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8")
+            msg = json.loads(line)
+            if "text_delta" in msg:
+                chunks.append(msg["text_delta"])
+                if ttfb is None:
+                    ttfb = time.perf_counter() - t_start
+            elif msg.get("event") == "done":
+                break
+
+    ttfb = ttfb if ttfb is not None else time.perf_counter() - t_start
+    duration = time.perf_counter() - t_start
+    text = "".join(chunks)
+    tokens = len(server_backend.tokenize(text))
+    throughput = tokens / duration if duration > 0 else 0.0
+    return text, duration, throughput, ttfb
+
+
+def run_server_streaming_chat(
+    *, client: TestClient, user_turns: Sequence[str], max_new_tokens: int
+) -> Tuple[list[tuple[str, str]], float, float]:
+    history: list[tuple[str, str]] = []
+    total_duration = 0.0
+    first_ttfb: Optional[float] = None
+
+    for user_turn in user_turns:
+        prompt = build_chat_prompt(history, user_turn)
+        text, duration, _, ttfb = run_server_stream(
+            client=client, prompt=prompt, max_new_tokens=max_new_tokens, mode="sglang"
+        )
+        total_duration += duration
+        if first_ttfb is None:
+            first_ttfb = ttfb
+        history.append((user_turn, text))
+
+    return history, total_duration, first_ttfb if first_ttfb is not None else 0.0
+
+
 def summarize(
     *,
     mode: str,
@@ -378,7 +465,7 @@ def print_comparison_row(
 
 
 def run_benchmark_suite(
-    *, engine: Any, backend: Any, max_new_tokens: int
+    *, engine: Any, backend: Any, max_new_tokens: int, server_client: TestClient
 ) -> None:
     """Run short + long prompts (and a refinement turn) and print a speed table."""
 
@@ -447,6 +534,28 @@ def run_benchmark_suite(
                     "throughput": greedy_tokens / greedy_duration if greedy_duration > 0 else 0.0,
                 }
             )
+
+            logging.info("=== %s | Server sglang streaming (chat) ===", label)
+            server_history, server_duration, server_ttfb = run_server_streaming_chat(
+                client=server_client, user_turns=user_turns, max_new_tokens=max_new_tokens
+            )
+            summarize_chat(
+                mode=f"{label} | Server (sglang)",
+                history=server_history,
+                duration=server_duration,
+                backend=server_backend,
+            )
+            server_tokens = len(server_backend.tokenize(" ".join(r for _, r in server_history)))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Server",
+                    "tokens": server_tokens,
+                    "duration": server_duration,
+                    "ttfb": server_ttfb,
+                    "throughput": server_tokens / server_duration if server_duration > 0 else 0.0,
+                }
+            )
         else:
             prompt = scenario["payload"]
             logging.info("=== %s | Streaming ===", label)
@@ -491,12 +600,40 @@ def run_benchmark_suite(
                 }
             )
 
+            logging.info("=== %s | Server sglang streaming ===", label)
+            server_text, server_duration, server_tp, server_ttfb = run_server_stream(
+                client=server_client, prompt=prompt, max_new_tokens=max_new_tokens, mode="sglang"
+            )
+            summarize(
+                mode=f"{label} | Server (sglang)",
+                text=server_text,
+                duration=server_duration,
+                backend=server_backend,
+            )
+            server_tokens = len(server_backend.tokenize(server_text))
+            rows.append(
+                {
+                    "scenario": label,
+                    "mode": "Server",
+                    "tokens": server_tokens,
+                    "duration": server_duration,
+                    "throughput": server_tp,
+                    "ttfb": server_ttfb,
+                }
+            )
+
     print("\nBenchmark comparison (generated tokens only):")
     for scenario in scenarios:
         label = scenario["label"]
-        stream_row = next(r for r in rows if r["scenario"] == label and r["mode"] == "Streaming")
+        stream_row = next(
+            r for r in rows if r["scenario"] == label and r["mode"] == "Streaming"
+        )
         greedy_row = next(
             r for r in rows if r["scenario"] == label and r["mode"] == "Baseline"
+        )
+        server_row = next(
+            (r for r in rows if r["scenario"] == label and r["mode"] == "Server"),
+            None,
         )
         speedup = (
             stream_row["throughput"] / greedy_row["throughput"]
@@ -509,6 +646,11 @@ def run_benchmark_suite(
             f" traditional {greedy_row['throughput']:.2f} tok/s"
             f" (x{speedup:.2f} throughput, Δ{delta:+.3f}s duration)"
         )
+        if server_row:
+            print(
+                f"    server (sglang): {server_row['throughput']:.2f} tok/s"
+                f"  duration={server_row['duration']:.3f}s  TTFB={server_row['ttfb']:.3f}s"
+            )
     print()
 
 
@@ -544,6 +686,7 @@ def main() -> None:
     engine = SGLangMiniEngine(
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )
+    server_client = TestClient(server_app)
 
     user_turns = args.prompt
     if not user_turns and args.max_new_tokens is None:
@@ -562,7 +705,10 @@ def main() -> None:
             token_budget,
         )
         run_benchmark_suite(
-            engine=engine, backend=backend, max_new_tokens=token_budget
+            engine=engine,
+            backend=backend,
+            max_new_tokens=token_budget,
+            server_client=server_client,
         )
         print("Done. Use the logs above to trace each benchmark.")
         return
@@ -592,8 +738,19 @@ def main() -> None:
             duration=greedy_duration,
             backend=backend,
         )
+        logging.info("=== Server sglang streaming (multi-turn) ===")
+        server_history, server_duration, server_ttfb = run_server_streaming_chat(
+            client=server_client, user_turns=user_turns, max_new_tokens=token_budget
+        )
+        summarize_chat(
+            mode="Server (sglang)",
+            history=server_history,
+            duration=server_duration,
+            backend=server_backend,
+        )
         stream_tokens = len(backend.tokenize(" ".join(bot for _, bot in stream_history)))
         greedy_tokens = len(backend.tokenize(" ".join(bot for _, bot in greedy_history)))
+        server_tokens = len(server_backend.tokenize(" ".join(bot for _, bot in server_history)))
         print("\nComparison summary (chat):")
         print_comparison_row(
             label="Multi-turn chat",
@@ -601,6 +758,11 @@ def main() -> None:
             stream_duration=stream_duration,
             greedy_tokens=greedy_tokens,
             greedy_duration=greedy_duration,
+        )
+        print(
+            f"- Server (sglang): {server_tokens} tokens in {server_duration:.3f}s"
+            f" ({server_tokens/server_duration if server_duration>0 else 0.0:.2f} tok/s,"
+            f" TTFB={server_ttfb:.3f}s)"
         )
     else:
         prompt = user_turns[0]
@@ -622,8 +784,19 @@ def main() -> None:
             duration=greedy_duration,
             backend=backend,
         )
+        logging.info("=== Server sglang streaming (single prompt) ===")
+        server_text, server_duration, server_tp, server_ttfb = run_server_stream(
+            client=server_client, prompt=prompt, max_new_tokens=token_budget, mode="sglang"
+        )
+        summarize(
+            mode="Server (sglang)",
+            text=server_text,
+            duration=server_duration,
+            backend=server_backend,
+        )
         stream_tokens = len(backend.tokenize(stream_text))
         greedy_tokens = len(backend.tokenize(greedy_text))
+        server_tokens = len(server_backend.tokenize(server_text))
         print("\nComparison summary:")
         print_comparison_row(
             label="Single prompt",
@@ -631,6 +804,10 @@ def main() -> None:
             stream_duration=stream_duration,
             greedy_tokens=greedy_tokens,
             greedy_duration=greedy_duration,
+        )
+        print(
+            f"- Server (sglang): {server_tokens} tokens in {server_duration:.3f}s"
+            f" ({server_tp:.2f} tok/s, TTFB={server_ttfb:.3f}s)"
         )
 
     print("Done. Use the logs above to trace each step.")
