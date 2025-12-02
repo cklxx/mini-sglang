@@ -97,6 +97,9 @@ class ModelBackend:
 
     def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
         configure_torch(device)
+        if os.getenv("FORCE_LEGACY_CACHE", "0") != "0":
+            os.environ.setdefault("HF_USE_LEGACY_CACHE", "1")
+            logger.info("FORCE_LEGACY_CACHE=1: enabling HF_USE_LEGACY_CACHE for legacy KV format")
         model_path = resolve_model_path(model_name)
 
         self.device = device
@@ -125,6 +128,7 @@ class ModelBackend:
         self._init_caches()
         self._init_chunked_prefill()
         self._init_decode_buffer()
+        self._detect_dynamic_cache()
         self._init_cuda_graph_settings()
         self._init_generation_config()
 
@@ -348,6 +352,18 @@ class ModelBackend:
             logger.info("Using torch_dtype=%s for model weights", dtype)
         return dtype
 
+    def _detect_dynamic_cache(self) -> None:
+        """Detect HF DynamicCache and mark graph capture unsafe."""
+        self.uses_dynamic_cache = False
+        use_cache = getattr(self.model.config, "use_cache", True)
+        if isinstance(use_cache, str) and use_cache.lower() == "dynamic":
+            self.uses_dynamic_cache = True
+            return
+        kv_cfg = getattr(self.model.config, "kv_cache_config", None)
+        impl = getattr(kv_cfg, "implementation", None)
+        if isinstance(impl, str) and impl.lower() == "dynamic":
+            self.uses_dynamic_cache = True
+
     def _resolve_attn_impl(self) -> Optional[str]:
         """Optional attention implementation override."""
         attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
@@ -421,6 +437,11 @@ class ModelBackend:
             and self.device.startswith("cuda")
         )
         self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None
+        if getattr(self, "uses_dynamic_cache", False):
+            if self.cuda_graph_enabled or self.decode_graph_enabled:
+                logger.info("Disabling CUDA graph capture because model uses DynamicCache")
+            self.cuda_graph_enabled = False
+            self.decode_graph_enabled = False
 
     def _init_generation_config(self) -> None:
         self.aggressive_max_new_tokens = self._flag_from_env("AGGRESSIVE_MAX_NEW_TOKENS", True)
