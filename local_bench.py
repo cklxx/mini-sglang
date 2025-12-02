@@ -32,6 +32,8 @@ def run_sglang_runtime(
         trust_remote_code=True,
         log_level="error",
     )
+    # Some sglang builds leave pid unset; guard __del__/shutdown from exploding.
+    runtime.pid = getattr(runtime, "pid", None)
 
     tokenizer = runtime.get_tokenizer()
     start = time.perf_counter()
@@ -85,7 +87,7 @@ def run_hf_streaming(
 
 
 def _missing_sglang_runtime_deps() -> list[str]:
-    required = ("uvloop", "psutil", "triton")
+    required = ("uvloop", "psutil", "triton", "PIL")
     return [mod for mod in required if importlib.util.find_spec(mod) is None]
 
 
