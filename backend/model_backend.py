@@ -37,7 +37,7 @@ def resolve_model_path(model_name: str) -> str:
 class ModelBackend:
     """Backend that handles model/tokenizer loading and forward passes."""
 
-    def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
+    def __init__(self, model_name: str, device: str, compile_model: bool = False) -> None:
         configure_torch(device)
         model_path = resolve_model_path(model_name)
 

@@ -87,7 +87,7 @@ def run_hf_streaming(
 
 
 def _missing_sglang_runtime_deps() -> list[str]:
-    required = ("uvloop", "psutil", "triton", "PIL")
+    required = ("uvloop", "psutil", "triton", "PIL", "partial_json_parser")
     return [mod for mod in required if importlib.util.find_spec(mod) is None]
 
 
