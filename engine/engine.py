@@ -41,6 +41,7 @@ class SGLangMiniEngine:
         self.decode_log_stride = decode_log_stride or int(
             os.getenv("DECODE_LOG_STRIDE", "32")
         )
+        self.use_fast_decode = os.getenv("ENGINE_FAST_DECODE", "0") != "0"
 
     def run_generate(
         self,
@@ -56,10 +57,25 @@ class SGLangMiniEngine:
             max_tokens = requested_tokens
 
         logger.info(
-            "Starting generation run | prompt_tokens=%d max_new_tokens=%d",
+            "Starting generation run | prompt_tokens=%d max_new_tokens=%d fast_decode=%s",
             len(prompt_ids),
             max_tokens,
+            self.use_fast_decode,
         )
+
+        if self.use_fast_decode:
+            text_chunks: list[str] = []
+
+            def _cb(delta: str) -> None:
+                text_chunks.append(delta)
+                stream_callback(delta)
+
+            self.backend.generate_streaming_baseline(
+                prompt_ids=prompt_ids,
+                max_new_tokens=max_tokens,
+                stream_callback=_cb,
+            )
+            return "".join(text_chunks)
 
         state = RequestState(
             prompt_text=prompt,
