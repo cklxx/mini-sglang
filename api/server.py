@@ -13,7 +13,7 @@ from threading import Thread
 from typing import Generator, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.model_backend import ModelBackend
@@ -103,8 +103,8 @@ def generate(request: GenerateRequest):
         def run_engine() -> None:
             prompt_ids = pool.primary_backend.tokenize(request.prompt)
             requested_tokens = request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
-            max_tokens = backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
             engine, lease = pool.pick(prompt_ids=prompt_ids)
+            max_tokens = pool.adapt_max_new_tokens(len(prompt_ids), requested_tokens, engine.backend)
             try:
                 if mode == "sglang":
                     engine.run_generate(
@@ -139,3 +139,9 @@ def generate(request: GenerateRequest):
             yield item
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/metrics")
+def metrics():
+    """Lightweight JSON metrics for cache hits/misses and inflight counts."""
+    return JSONResponse(pool.metrics())

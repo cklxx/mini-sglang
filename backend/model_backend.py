@@ -107,6 +107,9 @@ class ModelBackend:
         torch_dtype = self._resolve_torch_dtype()
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
+        attn_impl = self._resolve_attn_impl()
+        if attn_impl is not None:
+            model_kwargs["attn_implementation"] = attn_impl
 
         self.tokenizer = self._load_tokenizer(model_path)
         self.model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
@@ -345,6 +348,19 @@ class ModelBackend:
             logger.info("Using torch_dtype=%s for model weights", dtype)
         return dtype
 
+    def _resolve_attn_impl(self) -> Optional[str]:
+        """Optional attention implementation override."""
+        attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
+        if attn_impl is None:
+            return None
+        attn_impl = attn_impl.lower()
+        valid = {"flash_attention_2", "sdpa", "eager"}
+        if attn_impl not in valid:
+            logger.warning("Unrecognized ATTN_IMPL=%s; expected one of %s", attn_impl, ", ".join(sorted(valid)))
+            return None
+        logger.info("Using attn_implementation=%s", attn_impl)
+        return attn_impl
+
     def _load_tokenizer(self, model_path: str):
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
@@ -360,6 +376,7 @@ class ModelBackend:
         self.prefix_cache_size = int(os.getenv("PREFIX_CACHE_SIZE", "16"))
         self.prefix_cache_max_tokens = int(os.getenv("PREFIX_CACHE_MAX_TOKENS", "4096"))
         self.prefix_cache_token_budget = int(os.getenv("PREFIX_CACHE_TOKEN_BUDGET", "65536"))
+        self.prefix_cache_policy = (os.getenv("PREFIX_CACHE_POLICY", "lru") or "lru").lower()
         self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
         self.cache_stats = CacheStats()
         self.prefill_cache = PrefillCache(
@@ -370,6 +387,7 @@ class ModelBackend:
             size=self.prefix_cache_size,
             max_tokens=self.prefix_cache_max_tokens,
             token_budget=self.prefix_cache_token_budget,
+            policy=self.prefix_cache_policy,
         )
 
     def _init_chunked_prefill(self) -> None:

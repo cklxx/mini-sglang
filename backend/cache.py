@@ -120,13 +120,16 @@ class PrefixCache:
         size: int,
         max_tokens: int,
         token_budget: int,
+        policy: str = "lru",
     ) -> None:
         self.enable = enable
         self.size = size
         self.max_tokens = max_tokens
         self.token_budget = token_budget
+        self.policy = policy
         self.cache: OrderedDict[Tuple[int, ...], Any] = OrderedDict()
         self._trie = _PrefixTrieNode()
+        self._freq: Dict[Tuple[int, ...], int] = {}
 
     def maybe_get(self, prompt_ids: List[int], stats: CacheStats) -> tuple[Tuple[int, ...], Any] | None:
         if not (self.enable and self.size > 0):
@@ -140,6 +143,7 @@ class PrefixCache:
         if tokens in self.cache:
             self.cache.pop(tokens)
             self.cache[tokens] = cached_kv
+            self._freq[tokens] = self._freq.get(tokens, 0) + 1
         return tokens, cached_kv
 
     def match_length(self, prompt_ids: List[int]) -> int:
@@ -166,9 +170,11 @@ class PrefixCache:
         token_tuple = tuple(prompt_ids)
         self.cache[token_tuple] = kv_cache
         self._trie.insert(token_tuple, kv_cache)
+        self._freq[token_tuple] = self._freq.get(token_tuple, 0) + 1
         if len(self.cache) > self.size:
-            evicted, _ = self.cache.popitem(last=False)
-            self._trie.remove(evicted)
+            evicted = self._evict_one()
+            if evicted is not None:
+                self._trie.remove(evicted)
         self._trim_token_budget()
 
     def insert_prefix(self, prompt_ids: List[int], kv_cache: Any) -> None:
@@ -182,3 +188,25 @@ class PrefixCache:
             oldest_tokens, _ = self.cache.popitem(last=False)
             total_tokens -= len(oldest_tokens)
             self._trie.remove(oldest_tokens)
+            self._freq.pop(oldest_tokens, None)
+
+    def _evict_one(self) -> Optional[Tuple[int, ...]]:
+        if not self.cache:
+            return None
+        if self.policy == "lfu":
+            # Pick lowest frequency; break ties by LRU order.
+            min_freq = None
+            candidate: Tuple[int, ...] | None = None
+            for key in self.cache.keys():
+                freq = self._freq.get(key, 0)
+                if min_freq is None or freq < min_freq:
+                    min_freq = freq
+                    candidate = key
+            if candidate is not None:
+                self.cache.pop(candidate, None)
+                self._freq.pop(candidate, None)
+                return candidate
+        # Default LRU eviction.
+        evicted, _ = self.cache.popitem(last=False)
+        self._freq.pop(evicted, None)
+        return evicted

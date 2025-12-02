@@ -54,6 +54,11 @@ class EnginePool:
         self._next = 0
         self.max_inflight_total = int(os.getenv("MAX_INFLIGHT_TOTAL", "0"))
         self.max_inflight_per_engine = int(os.getenv("MAX_INFLIGHT_PER_ENGINE", "0"))
+        self.adaptive_max_new_tokens = os.getenv("ADAPTIVE_MAX_NEW_TOKENS", "0") != "0"
+        self.adaptive_inflight_threshold = int(
+            os.getenv("ADAPTIVE_MAX_INFLIGHT_THRESHOLD", str(len(self.engines)))
+        )
+        self.adaptive_factor = float(os.getenv("ADAPTIVE_MAX_NEW_TOKENS_FACTOR", "0.8"))
         self.scheduler_mode = os.getenv("SCHEDULER_MODE", "rr").lower()
         valid_modes = {"rr", "fsfs", "random", "cache_aware"}
         if self.scheduler_mode not in valid_modes:
@@ -175,3 +180,46 @@ class EnginePool:
                     eng.backend.insert_prefix(prompt)
                 except Exception as exc:
                     logger.warning("Failed to warm prefix %r on engine %s (%s)", prompt[:50], eng, exc)
+
+    def metrics(self) -> dict[str, Any]:
+        """Lightweight pool metrics for observability."""
+        with self._lock:
+            inflight = list(self._inflight)
+            total_inflight = sum(self._inflight)
+            scheduler = self.scheduler_mode
+            pool_size = len(self.engines)
+        cache_totals = {"prefill_hits": 0, "prefill_misses": 0, "prefix_hits": 0, "prefix_misses": 0}
+        for eng in self.engines:
+            stats = eng.backend.cache_metrics()
+            for k, v in stats.items():
+                cache_totals[k] = cache_totals.get(k, 0) + v
+        return {
+            "scheduler": scheduler,
+            "pool_size": pool_size,
+            "inflight_total": total_inflight,
+            "inflight_per_engine": inflight,
+            "cache": cache_totals,
+        }
+
+    def adapt_max_new_tokens(self, prompt_len: int, requested: int, backend: Any) -> int:
+        """Apply backend cap + optional adaptive downscale under load."""
+        capped = backend.cap_max_new_tokens(prompt_len, requested)
+        max_tokens = capped if capped is not None else requested
+        if not self.adaptive_max_new_tokens:
+            return max_tokens
+        with self._lock:
+            total = sum(self._inflight)
+        if self.adaptive_inflight_threshold > 0 and total >= self.adaptive_inflight_threshold:
+            factor = max(0.1, self.adaptive_factor)
+            new_tokens = max(1, int(max_tokens * factor))
+            if new_tokens < max_tokens:
+                logger.info(
+                    "Adaptive max_new_tokens downscale | from=%d to=%d inflight=%d threshold=%d factor=%.2f",
+                    max_tokens,
+                    new_tokens,
+                    total,
+                    self.adaptive_inflight_threshold,
+                    factor,
+                )
+                max_tokens = new_tokens
+        return max_tokens
