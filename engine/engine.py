@@ -41,7 +41,9 @@ class SGLangMiniEngine:
         self.decode_log_stride = decode_log_stride or int(
             os.getenv("DECODE_LOG_STRIDE", "32")
         )
-        self.use_fast_decode = os.getenv("ENGINE_FAST_DECODE", "0") != "0"
+        # Default to fast decode on non-CUDA devices to avoid Python per-token overhead.
+        default_fast = not str(self.backend.device).startswith("cuda")
+        self.use_fast_decode = os.getenv("ENGINE_FAST_DECODE", "1" if default_fast else "0") != "0"
 
     def run_generate(
         self,
