@@ -33,7 +33,7 @@ Both scripts default to the model in `MODEL_NAME` and allow overrides via `--mod
 - **Metrics endpoint**: GET `/metrics` returns scheduler mode, inflight counts, and cache hit/miss stats (prefix + prefill).
 - **Adaptive max_new_tokens under load**: when `ADAPTIVE_MAX_NEW_TOKENS=1`, downscale `max_new_tokens` if inflight requests exceed a threshold (`ADAPTIVE_MAX_INFLIGHT_THRESHOLD`, default pool size; `ADAPTIVE_MAX_NEW_TOKENS_FACTOR`, default 0.8).
 - **KV page manager (opt-in)**: set `PAGE_TOKEN_BUDGET` (and optional `PAGE_SIZE_TOKENS`) to store prefix cache KV in a paged store with token-budget eviction.
-- **Dynamic cache guard**: CUDA graph capture auto-disables when a model uses DynamicCache; set `FORCE_LEGACY_CACHE=1` to ask HF to use the legacy cache and allow graphs on supported models.
+- **Dynamic cache guard**: default `HF_USE_LEGACY_CACHE=1` to avoid DynamicCache and allow CUDA graphs; you can force legacy with `FORCE_LEGACY_CACHE=1` or opt out by setting `HF_USE_LEGACY_CACHE=0`.
 - **Fast decode mode**: set `ENGINE_FAST_DECODE=1` to use the HF streaming/generate path inside mini-sglang, eliminating Python per-token overhead for maximum throughput (defaults on for non-CUDA devices).
 - **Tensor parallel loading**: shard the model across available CUDA devices automatically (`TENSOR_PARALLEL_SIZE` defaults to GPU count).
 - **Torch compilation**: wrap the model with `torch.compile` unless disabled (`COMPILE_MODEL=0` to opt out, optional `COMPILE_MODE`).

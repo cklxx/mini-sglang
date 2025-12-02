@@ -97,9 +97,12 @@ class ModelBackend:
 
     def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
         configure_torch(device)
+        # Prefer legacy cache by default to avoid DynamicCache incompatibilities; can override.
+        if os.getenv("HF_USE_LEGACY_CACHE") is None:
+            os.environ["HF_USE_LEGACY_CACHE"] = "1"
         if os.getenv("FORCE_LEGACY_CACHE", "0") != "0":
-            os.environ.setdefault("HF_USE_LEGACY_CACHE", "1")
-            logger.info("FORCE_LEGACY_CACHE=1: enabling HF_USE_LEGACY_CACHE for legacy KV format")
+            os.environ["HF_USE_LEGACY_CACHE"] = "1"
+            logger.info("FORCE_LEGACY_CACHE=1: forcing HF_USE_LEGACY_CACHE for legacy KV format")
         model_path = resolve_model_path(model_name)
 
         self.device = device
@@ -364,7 +367,7 @@ class ModelBackend:
         if isinstance(impl, str) and impl.lower() == "dynamic":
             self.uses_dynamic_cache = True
         if self.uses_dynamic_cache:
-            # Prefer eager path to avoid graph capture errors; allow opt-in override.
+            # Prefer eager path to avoid graph capture errors; allow opt-in override with HF_USE_LEGACY_CACHE=0.
             if os.getenv("ENABLE_CUDA_GRAPH", "1") != "0" or os.getenv("ENABLE_DECODE_CUDA_GRAPH", "1") != "0":
                 logger.info("Detected DynamicCache; disabling CUDA graph capture (prefill/decode)")
             os.environ["ENABLE_CUDA_GRAPH"] = "0"
