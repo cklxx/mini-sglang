@@ -393,7 +393,7 @@ class ModelBackend:
 
     def _init_chunked_prefill(self) -> None:
         # Optional chunked prefill to trade small extra passes for lower peak memory.
-        self.chunked_prefill_enabled = self._flag_from_env("CHUNKED_PREFILL", default=True)
+        self.chunked_prefill_enabled = self._flag_from_env("CHUNKED_PREFILL", default=False)
         self.prefill_chunk_size = max(1, int(os.getenv("PREFILL_CHUNK_SIZE", "512")))
 
     def _init_decode_buffer(self) -> None:
@@ -406,13 +406,13 @@ class ModelBackend:
 
     def _init_cuda_graph_settings(self) -> None:
         self.cuda_graph_enabled = (
-            self._flag_from_env("ENABLE_CUDA_GRAPH", default=True)
+            self._flag_from_env("ENABLE_CUDA_GRAPH", default=False)
             and self.device.startswith("cuda")
         )
         self.cuda_graph_max_seq_len = int(os.getenv("CUDA_GRAPH_MAX_SEQ_LEN", "512"))
         self._prefill_graphs: Dict[int, Callable[[torch.Tensor], Any]] = {}
         self.decode_graph_enabled = (
-            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=True)
+            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=False)
             and self.device.startswith("cuda")
         )
         self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None
