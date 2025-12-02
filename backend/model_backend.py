@@ -37,7 +37,7 @@ def resolve_model_path(model_name: str) -> str:
 class ModelBackend:
     """Backend that handles model/tokenizer loading and forward passes."""
 
-    def __init__(self, model_name: str, device: str, compile_model: bool = False) -> None:
+    def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
         configure_torch(device)
         model_path = resolve_model_path(model_name)
 
@@ -407,13 +407,13 @@ class ModelBackend:
 
     def _init_cuda_graph_settings(self) -> None:
         self.cuda_graph_enabled = (
-            self._flag_from_env("ENABLE_CUDA_GRAPH", default=False)
+            self._flag_from_env("ENABLE_CUDA_GRAPH", default=True)
             and self.device.startswith("cuda")
         )
         self.cuda_graph_max_seq_len = int(os.getenv("CUDA_GRAPH_MAX_SEQ_LEN", "512"))
         self._prefill_graphs: Dict[int, Callable[[torch.Tensor], Any]] = {}
         self.decode_graph_enabled = (
-            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=False)
+            self._flag_from_env("ENABLE_DECODE_CUDA_GRAPH", default=True)
             and self.device.startswith("cuda")
         )
         self._decode_graph: Callable[[torch.Tensor, Any], Any] | None = None

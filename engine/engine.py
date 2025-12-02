@@ -39,7 +39,7 @@ class SGLangMiniEngine:
         self.backend = backend
         self.max_new_tokens_default = max_new_tokens_default
         self.decode_log_stride = decode_log_stride or int(
-            os.getenv("DECODE_LOG_STRIDE", "32")
+            os.getenv("DECODE_LOG_STRIDE", "256")
         )
 
     def run_generate(

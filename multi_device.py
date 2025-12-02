@@ -28,7 +28,7 @@ class EnginePool:
         SGLangMiniEngine,
         model_name: str = MODEL_NAME,
         max_new_tokens_default: int = MAX_NEW_TOKENS_DEFAULT,
-        compile_model: bool = False,
+        compile_model: bool = True,
     ) -> None:
         enable_multi = os.getenv("ENABLE_MULTI_DEVICE", "1") != "0"
         devices: list[str]
