@@ -363,6 +363,12 @@ class ModelBackend:
         impl = getattr(kv_cfg, "implementation", None)
         if isinstance(impl, str) and impl.lower() == "dynamic":
             self.uses_dynamic_cache = True
+        if self.uses_dynamic_cache:
+            # Prefer eager path to avoid graph capture errors; allow opt-in override.
+            if os.getenv("ENABLE_CUDA_GRAPH", "1") != "0" or os.getenv("ENABLE_DECODE_CUDA_GRAPH", "1") != "0":
+                logger.info("Detected DynamicCache; disabling CUDA graph capture (prefill/decode)")
+            os.environ["ENABLE_CUDA_GRAPH"] = "0"
+            os.environ["ENABLE_DECODE_CUDA_GRAPH"] = "0"
 
     def _resolve_attn_impl(self) -> Optional[str]:
         """Optional attention implementation override."""
@@ -414,7 +420,7 @@ class ModelBackend:
 
     def _init_chunked_prefill(self) -> None:
         # Optional chunked prefill to trade small extra passes for lower peak memory.
-        self.chunked_prefill_enabled = self._flag_from_env("CHUNKED_PREFILL", default=False)
+        self.chunked_prefill_enabled = self._flag_from_env("CHUNKED_PREFILL", default=True)
         self.prefill_chunk_size = max(1, int(os.getenv("PREFILL_CHUNK_SIZE", "512")))
 
     def _init_decode_buffer(self) -> None:
