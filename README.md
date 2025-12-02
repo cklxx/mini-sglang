@@ -115,9 +115,7 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`). If huggingface.co
-is unreachable, the loader will auto-fallback to the same repo on 魔搭 ModelScope (override with `MODELSCOPE_MODEL_NAME` or use
-`MODEL_LOCAL_DIR` to point at a pre-downloaded path).
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen2.5-0.5B-Instruct`). Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 

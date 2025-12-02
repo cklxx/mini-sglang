@@ -66,9 +66,9 @@ def inference_context(device: str):
 
     # Autocast only on CUDA/MPS; CPU autocast is limited.
     if device == "cuda":
-        return torch.cuda.amp.autocast(), torch.inference_mode()
+        return torch.amp.autocast(device_type="cuda"), torch.inference_mode()
     if device == "mps":
-        return torch.autocast("mps"), torch.inference_mode()
+        return torch.amp.autocast(device_type="mps"), torch.inference_mode()
     return nullcontext(), torch.inference_mode()
 
 

@@ -13,8 +13,6 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
-import httpx
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
@@ -26,70 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_model_path(model_name: str) -> str:
-    """Return a local model path, falling back to ModelScope when HF is blocked.
-
-    The flow prefers an existing local Hugging Face cache, then tries a quick
-    HEAD check + download from huggingface.co. If that fails (e.g., network
-    egress is blocked), it falls back to ModelScope ("魔搭") using the same
-    model id or ``MODELSCOPE_MODEL_NAME`` if provided.
-    """
+    """Resolve the model path or repo id, honoring a local override."""
 
     local_override = os.getenv("MODEL_LOCAL_DIR")
     if local_override:
         logger.info("Using MODEL_LOCAL_DIR=%s", local_override)
         return local_override
 
-    # 1) Use cached Hugging Face files if they already exist to avoid network.
-    try:
-        from huggingface_hub import snapshot_download as hf_snapshot_download
-
-        cached_path = hf_snapshot_download(repo_id=model_name, local_files_only=True)
-        logger.info("Using cached Hugging Face model at %s", cached_path)
-        return cached_path
-    except Exception:
-        cached_path = None
-
-    # 2) Try Hugging Face if reachable.
-    hf_ok = False
-    try:
-        resp = httpx.head(
-            f"https://huggingface.co/{model_name}",
-            follow_redirects=True,
-            timeout=3.0,
-        )
-        hf_ok = resp.status_code < 400
-        if not hf_ok:
-            logger.warning(
-                "Hugging Face responded with status %s for %s", resp.status_code, model_name
-            )
-    except Exception as err:  # pragma: no cover - best-effort network probe
-        logger.warning("Hugging Face connectivity check failed: %s", err)
-
-    if hf_ok:
-        try:
-            from huggingface_hub import snapshot_download as hf_snapshot_download
-
-            hf_path = hf_snapshot_download(repo_id=model_name, local_files_only=False)
-            logger.info("Downloaded model from Hugging Face to %s", hf_path)
-            return hf_path
-        except Exception as err:
-            logger.warning("Hugging Face download failed (%s); trying ModelScope.", err)
-
-    # 3) Fallback to ModelScope (魔搭)
-    ms_repo = os.getenv("MODELSCOPE_MODEL_NAME", model_name)
-    try:
-        from modelscope import snapshot_download as ms_snapshot_download
-
-        ms_path = ms_snapshot_download(ms_repo)
-        logger.info("Downloaded model from ModelScope repo=%s to %s", ms_repo, ms_path)
-        return ms_path
-    except Exception as err:
-        logger.error(
-            "Model download failed from Hugging Face%s and ModelScope",
-            " (cache hit)" if cached_path else "",
-            exc_info=err,
-        )
-        raise
+    return model_name
 
 
 class ModelBackend:
@@ -97,12 +39,6 @@ class ModelBackend:
 
     def __init__(self, model_name: str, device: str, compile_model: bool = True) -> None:
         configure_torch(device)
-        # Prefer legacy cache by default to avoid DynamicCache incompatibilities; can override.
-        if os.getenv("HF_USE_LEGACY_CACHE") is None:
-            os.environ["HF_USE_LEGACY_CACHE"] = "1"
-        if os.getenv("FORCE_LEGACY_CACHE", "0") != "0":
-            os.environ["HF_USE_LEGACY_CACHE"] = "1"
-            logger.info("FORCE_LEGACY_CACHE=1: forcing HF_USE_LEGACY_CACHE for legacy KV format")
         model_path = resolve_model_path(model_name)
 
         self.device = device
@@ -116,9 +52,14 @@ class ModelBackend:
         attn_impl = self._resolve_attn_impl()
         if attn_impl is not None:
             model_kwargs["attn_implementation"] = attn_impl
+        trust_remote_code = self._flag_from_env("TRUST_REMOTE_CODE", default=False)
 
-        self.tokenizer = self._load_tokenizer(model_path)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        self.tokenizer = self._load_tokenizer(model_path, trust_remote_code=trust_remote_code)
+        self.model = self._load_model(
+            model_path=model_path,
+            model_kwargs=model_kwargs,
+            trust_remote_code=trust_remote_code,
+        )
         self.model = maybe_compile_model(self.model, device=device, enabled=compile_enabled)
 
         if use_tensor_parallel:
@@ -386,11 +327,40 @@ class ModelBackend:
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
 
-    def _load_tokenizer(self, model_path: str):
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
+        """Load tokenizer with a fallback to trust_remote_code for newer models."""
+        base_kwargs: Dict[str, Any] = {}
+        if trust_remote_code:
+            base_kwargs["trust_remote_code"] = True
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_path, **base_kwargs)
+        except ValueError as exc:
+            if trust_remote_code:
+                raise
+            logger.warning(
+                "Retrying tokenizer load with trust_remote_code=True after failure: %s", exc
+            )
+            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
         return tokenizer
+
+    def _load_model(self, model_path: str, model_kwargs: Dict[str, Any], trust_remote_code: bool):
+        """Load model with best-effort retry enabling trust_remote_code when needed."""
+        base_kwargs = dict(model_kwargs)
+        if trust_remote_code:
+            base_kwargs["trust_remote_code"] = True
+        try:
+            return AutoModelForCausalLM.from_pretrained(model_path, **base_kwargs)
+        except ValueError as exc:
+            if trust_remote_code:
+                raise
+            logger.warning(
+                "Retrying model load with trust_remote_code=True after failure: %s", exc
+            )
+            return AutoModelForCausalLM.from_pretrained(
+                model_path, trust_remote_code=True, **model_kwargs
+            )
 
     def _init_caches(self) -> None:
         # Simple LRU caches for tokenization and prefill KV reuse.
