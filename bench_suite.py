@@ -35,7 +35,7 @@ def _make_prompt(token_count: int) -> str:
 
 def _default_workloads() -> list[Workload]:
     return [
-        Workload("short", prompt_tokens=16, max_new_tokens=256),
+        Workload("long", prompt_tokens=256, max_new_tokens=1024),
     ]
 
 
