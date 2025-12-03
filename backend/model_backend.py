@@ -298,27 +298,24 @@ class ModelBackend:
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
 
-    def _is_qwen_family(self) -> bool:
-        """Detect Qwen2.x/3.x models by name or config."""
+    def _is_qwen3(self) -> bool:
+        """Detect Qwen3 models by name or config."""
         name = self.model_name.lower()
         cfg = getattr(self, "model", None)
         cfg_type = ""
         if cfg is not None:
             cfg_type = str(getattr(cfg, "config", None) and getattr(cfg.config, "model_type", "")).lower()
-        return any(
-            key in name or cfg_type == key
-            for key in ("qwen2.5", "qwen2", "qwen3")
-        )
+        return "qwen3" in name or cfg_type == "qwen3"
 
     def _maybe_optimize_qwen_attention(self) -> None:
-        """Enable flash attention flags for Qwen2.x when possible."""
-        if self.model is None or not self._is_qwen_family():
+        """Enable flash attention flags for Qwen3 when possible."""
+        if self.model is None or not self._is_qwen3():
             return
         cfg = getattr(self.model, "config", None)
         if cfg is None:
             return
         if not self.device.startswith("cuda"):
-            logger.info("Qwen2 model detected but flash attention requires CUDA; device=%s", self.device)
+            logger.info("Qwen3 model detected but flash attention requires CUDA; device=%s", self.device)
             return
         if self.attn_impl != "flash_attention_2":
             return
@@ -330,7 +327,7 @@ class ModelBackend:
             cfg.flash_attn = True
             toggled = True
         if toggled:
-            logger.info("Enabled Qwen2 flash attention flags for CUDA execution")
+            logger.info("Enabled Qwen3 flash attention flags for CUDA execution")
 
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""
