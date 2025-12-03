@@ -11,6 +11,8 @@ import os
 import time
 from typing import Callable, Optional
 
+import torch
+
 from backend.model_backend import ModelBackend
 from optimizations import inference_context
 
@@ -63,6 +65,8 @@ class SGLangMiniEngine:
             first_token_id, kv_cache = self.backend.prefill_forward(
                 prompt_ids, use_context=False
             )
+            if self.backend.device.startswith("cuda"):
+                torch.cuda.synchronize()
             t_prefill_end = time.perf_counter()
             generated_ids.append(first_token_id)
             text_delta = self.backend.decode_tokens([first_token_id])
@@ -118,6 +122,8 @@ class SGLangMiniEngine:
                         )
                     stream_callback(text_delta)
                     text_chunks.append(text_delta)
+                if self.backend.device.startswith("cuda"):
+                    torch.cuda.synchronize()
                 t_decode_end = time.perf_counter()
 
             # We already decoded per-step deltas; join them instead of re-decoding full ids.
