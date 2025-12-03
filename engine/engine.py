@@ -40,6 +40,7 @@ class SGLangMiniEngine:
         prompt_ids: Optional[list[int]] = None,
     ) -> str:
         """Generate text using prefill + decode while invoking a stream callback."""
+        fast_stream_decode = os.getenv("FAST_STREAM_DECODE", "1") != "0"
         prompt_ids = prompt_ids if prompt_ids is not None else self.backend.tokenize(prompt)
         requested_tokens = max_new_tokens or self.max_new_tokens_default
         max_tokens = self.backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
@@ -70,7 +71,8 @@ class SGLangMiniEngine:
             t_prefill_end = time.perf_counter()
             generated_ids.append(first_token_id)
             text_delta = self.backend.decode_tokens([first_token_id])
-            text_chunks.append(text_delta)
+            if not fast_stream_decode:
+                text_chunks.append(text_delta)
             logger.info("Prefill emitted token_id=%d text=%r", first_token_id, text_delta)
             stream_callback(text_delta)
 
@@ -105,7 +107,9 @@ class SGLangMiniEngine:
                     generated_ids.append(next_token_id)
                     if next_token_id == eos_token_id:
                         finished = True
-                    text_delta = self.backend.decode_tokens([next_token_id])
+                    text_delta = None
+                    if not fast_stream_decode:
+                        text_delta = self.backend.decode_tokens([next_token_id])
                     should_log = (
                         step_index == 0
                         or (step_index + 1) % max(1, self.decode_log_stride) == 0
@@ -116,18 +120,22 @@ class SGLangMiniEngine:
                             "Decode step %d emitted token_id=%d text=%r finished=%s step_time=%.4fs",
                             step_index,
                             next_token_id,
-                            text_delta,
+                            text_delta if text_delta is not None else "<skipped>",
                             finished,
                             step_end - step_start,
                         )
-                    stream_callback(text_delta)
-                    text_chunks.append(text_delta)
+                    stream_callback(text_delta if text_delta is not None else " ")
+                    if text_delta is not None:
+                        text_chunks.append(text_delta)
                 if self.backend.device.startswith("cuda"):
                     torch.cuda.synchronize()
                 t_decode_end = time.perf_counter()
 
             # We already decoded per-step deltas; join them instead of re-decoding full ids.
-            full_text = "".join(text_chunks)
+            if fast_stream_decode:
+                full_text = self.backend.decode_tokens(generated_ids)
+            else:
+                full_text = "".join(text_chunks)
             finished = True
         t_end = time.perf_counter()
         prefill_time = (t_prefill_end - t_prefill_start) if "t_prefill_end" in locals() else 0.0
