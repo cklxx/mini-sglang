@@ -784,12 +784,10 @@ class ModelBackend:
         cache_dtype = self._cache_dtype()
         if self._static_cache is not None:
             cached_dtype = self._cache_values_dtype(self._static_cache)
-            if cached_dtype is None:
-                logger.warning("StaticCache dtype unknown; disabling static KV to avoid mismatch")
-                self.enable_static_kv = False
-                self._static_cache = None
-                return None
             if cached_dtype == cache_dtype:
+                return self._static_cache
+            if cached_dtype is None:
+                # Cache was never populated; keep it and let first use decide dtype.
                 return self._static_cache
             logger.info(
                 "Reinitializing StaticCache for dtype change (cache=%s expected=%s)",
@@ -811,12 +809,7 @@ class ModelBackend:
             )
             created_dtype = self._cache_values_dtype(self._static_cache)
             if created_dtype is None:
-                logger.warning(
-                    "StaticCache dtype unknown after init; disabling static KV to avoid mismatch"
-                )
-                self.enable_static_kv = False
-                self._static_cache = None
-                return None
+                return self._static_cache
             if created_dtype != cache_dtype:
                 logger.warning(
                     "StaticCache dtype mismatch after init (cache=%s expected=%s); disabling static KV",
@@ -836,12 +829,7 @@ class ModelBackend:
                 )
                 cached_dtype = self._cache_values_dtype(self._static_cache)
                 if cached_dtype is None:
-                    logger.warning(
-                        "StaticCache dtype unknown after fallback init; disabling static KV"
-                    )
-                    self.enable_static_kv = False
-                    self._static_cache = None
-                    return None
+                    return self._static_cache
                 if cached_dtype is not None and cached_dtype != cache_dtype:
                     logger.warning(
                         "StaticCache dtype mismatch (cache=%s expected=%s); disabling static KV",
