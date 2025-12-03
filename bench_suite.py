@@ -2,6 +2,9 @@
 
 Runs mixed workloads concurrently to exercise scheduling, cache reuse, and
 throughput under load. Defaults are sensible; tune via env vars only.
+
+Optional: compare real sglang Runtime (sgl-kernel) vs HF streaming baseline for a
+single prompt/length; enabled via BENCH_INCLUDE_SGLANG=1 and uses fixed defaults.
 """
 
 from __future__ import annotations
@@ -11,13 +14,28 @@ import logging
 import os
 import random
 import statistics
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Tuple
 
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+
 from backend.model_backend import ModelBackend
 from config import MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
+
+try:
+    from sglang import Runtime, function, gen, set_default_backend
+except Exception as exc:  # pragma: no cover - optional at install time
+    Runtime = None  # type: ignore
+    function = None  # type: ignore
+    gen = None  # type: ignore
+    set_default_backend = None  # type: ignore
+    _sglang_import_error = exc
+else:
+    _sglang_import_error = None
 
 
 @dataclass
@@ -156,6 +174,136 @@ def _run_suite(
         )
 
 
+def _auto_dtype() -> Optional[torch.dtype]:
+    if torch.cuda.is_available():
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    if torch.backends.mps.is_available():
+        return torch.float16
+    return None
+
+
+def _p50(values: List[float]) -> float:
+    return statistics.median(values) if values else 0.0
+
+
+def _bench_hf_stream(
+    model_name: str,
+    prompt: str,
+    max_new_tokens: int,
+    repeat: int,
+    dtype: Optional[torch.dtype],
+) -> Tuple[float, float]:
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=dtype, device_map="auto", trust_remote_code=True
+    )
+    samples: List[Tuple[float, float, int]] = []
+    for _ in range(repeat):
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+        t0 = time.perf_counter()
+        first: Optional[float] = None
+        thread = threading.Thread(
+            target=model.generate,
+            kwargs=dict(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                streamer=streamer,
+                do_sample=False,
+            ),
+        )
+        thread.start()
+        chunks: List[str] = []
+        for delta in streamer:
+            if delta and first is None:
+                first = time.perf_counter()
+            chunks.append(delta)
+        thread.join()
+        t1 = time.perf_counter()
+        tokens = len(tokenizer.encode("".join(chunks), add_special_tokens=False))
+        samples.append(((first or t1) - t0, t1 - t0, tokens))
+    ttfb_p50 = _p50([s[0] for s in samples])
+    tp_p50 = _p50([s[2] / s[1] for s in samples if s[1] > 0])
+    return ttfb_p50, tp_p50
+
+
+def _bench_sglang_runtime(
+    model_name: str,
+    prompt: str,
+    max_new_tokens: int,
+    repeat: int,
+    tensor_parallel_size: int,
+) -> Tuple[float, float]:
+    if Runtime is None or function is None or gen is None or set_default_backend is None:
+        raise RuntimeError(f"sglang not available: {_sglang_import_error}")
+    runtime = Runtime(
+        model_path=model_name,
+        tokenizer_path=model_name,
+        tensor_parallel_size=tensor_parallel_size,
+        trust_remote_code=True,
+    )
+    set_default_backend(runtime)
+
+    @function
+    def stream_chat(s, prompt_text: str):
+        s += prompt_text
+        s += gen("", max_new_tokens=max_new_tokens, stream=True, temperature=0.0)
+
+    samples: List[Tuple[float, float, int]] = []
+    for _ in range(repeat):
+        t0 = time.perf_counter()
+        first: Optional[float] = None
+        chunks: List[str] = []
+        for delta in stream_chat.run_stream(prompt_text=prompt, temperature=0.0):
+            if delta and first is None:
+                first = time.perf_counter()
+            chunks.append(delta)
+        t1 = time.perf_counter()
+        tokens = len(runtime.tokenizer.encode("".join(chunks), add_special_tokens=False))
+        samples.append(((first or t1) - t0, t1 - t0, tokens))
+    ttfb_p50 = _p50([s[0] for s in samples])
+    tp_p50 = _p50([s[2] / s[1] for s in samples if s[1] > 0])
+    return ttfb_p50, tp_p50
+
+
+def _run_sglang_vs_hf() -> None:
+    compare = os.getenv("BENCH_INCLUDE_SGLANG", "0") == "1"
+    if not compare:
+        return
+    prompt = "Hello from sglang vs HF!"
+    max_new_tokens = 256
+    repeat = max(1, int(os.getenv("BENCH_REPEAT", "3")))
+    tp_size = 1
+    dtype = _auto_dtype()
+    logging.getLogger(__name__).info(
+        "Running sglang vs HF | model=%s prompt_len=%d max_new_tokens=%d repeat=%d dtype=%s tp=%d",
+        MODEL_NAME,
+        len(prompt),
+        max_new_tokens,
+        repeat,
+        dtype,
+        tp_size,
+    )
+    hf_ttfb, hf_tp = _bench_hf_stream(
+        model_name=MODEL_NAME,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        repeat=repeat,
+        dtype=dtype,
+    )
+    sgl_ttfb, sgl_tp = _bench_sglang_runtime(
+        model_name=MODEL_NAME,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        repeat=repeat,
+        tensor_parallel_size=tp_size,
+    )
+    print("\nSGLang Runtime vs HF (p50):")
+    print(f"- model={MODEL_NAME} prompt={prompt!r} max_new_tokens={max_new_tokens} repeat={repeat}")
+    print(f"- HF       TTFB={hf_ttfb:.3f}s throughput={hf_tp:.2f} tok/s (dtype={dtype or 'auto'})")
+    print(f"- sglang   TTFB={sgl_ttfb:.3f}s throughput={sgl_tp:.2f} tok/s (tp_size={tp_size})")
+
+
 def main() -> None:
     repeat = max(1, int(os.getenv("BENCH_REPEAT", "3")))
     warmup = max(0, int(os.getenv("BENCH_WARMUP", "1")))
@@ -181,6 +329,7 @@ def main() -> None:
         concurrency=concurrency,
         mixed_prompts=mixed_prompts,
     )
+    _run_sglang_vs_hf()
 
 
 if __name__ == "__main__":
