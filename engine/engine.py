@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Callable, Optional
 
 from backend.model_backend import ModelBackend
@@ -56,10 +57,13 @@ class SGLangMiniEngine:
 
         auto_ctx, inf_ctx = inference_context(self.backend.device)
         text_chunks: list[str] = []
+        t_start = time.perf_counter()
         with auto_ctx, inf_ctx:
+            t_prefill_start = time.perf_counter()
             first_token_id, kv_cache = self.backend.prefill_forward(
                 prompt_ids, use_context=False
             )
+            t_prefill_end = time.perf_counter()
             generated_ids.append(first_token_id)
             text_delta = self.backend.decode_tokens([first_token_id])
             text_chunks.append(text_delta)
@@ -114,5 +118,20 @@ class SGLangMiniEngine:
             # We already decoded per-step deltas; join them instead of re-decoding full ids.
             full_text = "".join(text_chunks)
             finished = True
-        logger.info("Generation complete | %d tokens emitted", len(generated_ids))
+        t_end = time.perf_counter()
+        prefill_time = (t_prefill_end - t_prefill_start) if "t_prefill_end" in locals() else 0.0
+        decode_time = max(0.0, t_end - t_prefill_end)
+        total_time = t_end - t_start
+        decode_tokens = max(0, len(generated_ids) - 1)
+        throughput = (len(generated_ids) / total_time) if total_time > 0 else 0.0
+        logger.info(
+            "Generation complete | tokens=%d prefill=%.3fs decode=%.3fs total=%.3fs "
+            "decode_tokens=%d throughput=%.2f tok/s",
+            len(generated_ids),
+            prefill_time,
+            decode_time,
+            total_time,
+            decode_tokens,
+            throughput,
+        )
         return full_text
