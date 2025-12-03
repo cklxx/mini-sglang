@@ -16,6 +16,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
+try:
+    from transformers.utils import is_flash_attn_2_available
+except Exception:
+
+    def is_flash_attn_2_available() -> bool:
+        return False
+
 from backend.cache import CacheStats, PrefixCache, PrefillCache, KVPageManager
 from optimizations import configure_torch, inference_context, maybe_compile_model
 
@@ -281,6 +288,11 @@ class ModelBackend:
         if attn_impl == "fa3":
             # Transformers uses flash_attention_2 keyword; keep fa3 as alias.
             attn_impl = "flash_attention_2"
+        if attn_impl == "flash_attention_2" and not is_flash_attn_2_available():
+            logger.warning(
+                "Flash attention requested but flash_attn is not installed; falling back to sdpa"
+            )
+            return "sdpa"
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
 
@@ -304,20 +316,34 @@ class ModelBackend:
 
     def _load_model(self, model_path: str, model_kwargs: Dict[str, Any], trust_remote_code: bool):
         """Load model with best-effort retry enabling trust_remote_code when needed."""
+        def _attempt_load(kwargs: Dict[str, Any]):
+            try:
+                return AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+            except ImportError as exc:
+                if kwargs.get("attn_implementation") == "flash_attention_2":
+                    logger.warning(
+                        "Flash attention requested but not available (%s); retrying with sdpa",
+                        exc,
+                    )
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs["attn_implementation"] = "sdpa"
+                    return AutoModelForCausalLM.from_pretrained(model_path, **retry_kwargs)
+                raise
+
         base_kwargs = dict(model_kwargs)
         if trust_remote_code:
             base_kwargs["trust_remote_code"] = True
         try:
-            return AutoModelForCausalLM.from_pretrained(model_path, **base_kwargs)
+            return _attempt_load(base_kwargs)
         except ValueError as exc:
             if trust_remote_code:
                 raise
             logger.warning(
                 "Retrying model load with trust_remote_code=True after failure: %s", exc
             )
-            return AutoModelForCausalLM.from_pretrained(
-                model_path, trust_remote_code=True, **model_kwargs
-            )
+            retry_kwargs = dict(model_kwargs)
+            retry_kwargs["trust_remote_code"] = True
+            return _attempt_load(retry_kwargs)
 
     def _init_caches(self) -> None:
         # Simple LRU caches for tokenization and prefill KV reuse.
