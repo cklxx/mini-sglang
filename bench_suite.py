@@ -171,7 +171,7 @@ def main() -> None:
     warmup = max(0, int(os.getenv("BENCH_WARMUP", "0")))
     concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "1")))
     mixed_prompts = os.getenv("BENCH_MIXED_PROMPTS", "1") != "0"
-    log_level = os.getenv("BENCH_LOG_LEVEL", "WARNING").upper()
+    log_level = os.getenv("BENCH_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, log_level, logging.WARNING),
         format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
