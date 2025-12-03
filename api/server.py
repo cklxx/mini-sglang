@@ -3,6 +3,7 @@
 This mirrors sglang's API layer in miniature: a single POST /generate that
 drives the engine and streams tokens back to the caller.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,40 +11,64 @@ import logging
 import os
 import time
 from queue import SimpleQueue
-from threading import Thread
+from threading import Thread, Lock
 from typing import Generator, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.model_backend import ModelBackend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
-from multi_device import EnginePool
 from ipc.zmq_control import start_control_server
+from multi_device import EnginePool
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="sglang-mini")
 
-pool = EnginePool(
-    ModelBackend=ModelBackend,
-    SGLangMiniEngine=SGLangMiniEngine,
-    model_name=MODEL_NAME,
-    max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT,
-    compile_model=os.getenv("COMPILE_MODEL", "0") == "1",
-)
-backend = pool.primary_backend
 STREAM_LOG_STRIDE = max(1, int(os.getenv("SERVER_STREAM_LOG_STRIDE", "32")))
+_pool: EnginePool | None = None
+_pool_lock = Lock()
+_logging_configured = False
+
+
+def _configure_logging() -> None:
+    global _logging_configured
+    if _logging_configured:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
+    )
+    _logging_configured = True
+
+
+def _ensure_pool() -> EnginePool:
+    global _pool
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = EnginePool(
+                ModelBackend=ModelBackend,
+                SGLangMiniEngine=SGLangMiniEngine,
+                model_name=MODEL_NAME,
+                max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT,
+            )
+    return _pool
+
+
+def get_pool() -> EnginePool:
+    """Public accessor for the lazily initialized EnginePool."""
+    return _ensure_pool()
 
 
 @app.on_event("startup")
 def _warm_server() -> None:
+    _configure_logging()
+    pool = _ensure_pool()
     warm_tokens = min(16, MAX_NEW_TOKENS_DEFAULT)
     logger.info("Server warmup starting | tokens=%d model=%s", warm_tokens, MODEL_NAME)
     pool.warm(warm_tokens)
@@ -110,12 +135,13 @@ def generate(request: GenerateRequest):
                     logger.info("Streamed chunk %03d (mode=%s): %r", send_count, mode, chunk)
 
         def run_engine() -> None:
-            prompt_ids = pool.primary_backend.tokenize(request.prompt)
-            if os.getenv("ASYNC_PREFILL_QUEUE", "0") != "0":
-                pool.enqueue_prefill(request.prompt)
+            local_pool = _ensure_pool()
+            prompt_ids = local_pool.primary_backend.tokenize(request.prompt)
+            if local_pool.async_prefill_enabled:
+                local_pool.enqueue_prefill(request.prompt)
             requested_tokens = request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
-            engine, lease = pool.pick(prompt_ids=prompt_ids)
-            max_tokens = pool.adapt_max_new_tokens(len(prompt_ids), requested_tokens, engine.backend)
+            engine, lease = local_pool.pick(prompt_ids=prompt_ids)
+            max_tokens = local_pool.adapt_max_new_tokens(requested_tokens)
             generated_text: str = ""
             try:
                 if mode == "sglang":
@@ -142,12 +168,14 @@ def generate(request: GenerateRequest):
             finally:
                 duration = time.perf_counter() - start_time
                 try:
-                    gen_tokens = len(engine.backend.tokenize(generated_text)) if generated_text else 0
+                    gen_tokens = (
+                        len(engine.backend.tokenize(generated_text)) if generated_text else 0
+                    )
                 except Exception:
                     gen_tokens = 0
                 total_tokens = len(prompt_ids) + gen_tokens
-                pool.record_generation(duration_s=duration, tokens=total_tokens)
-                pool.release(lease)
+                local_pool.record_generation(duration_s=duration, tokens=total_tokens)
+                local_pool.release(lease)
 
         thread = Thread(target=run_engine, daemon=True)
         thread.start()
@@ -164,6 +192,7 @@ def generate(request: GenerateRequest):
 @app.get("/metrics")
 def metrics():
     """Lightweight JSON metrics for cache hits/misses and inflight counts."""
+    pool = _ensure_pool()
     return JSONResponse(pool.metrics())
 
 
@@ -171,7 +200,7 @@ def _handle_control(req: dict[str, object]) -> dict[str, object]:
     raw_cmd = req.get("cmd") or ""
     cmd = str(raw_cmd).lower()
     if cmd == "metrics":
-        return pool.metrics()
+        return _ensure_pool().metrics()
     if cmd == "warm":
         tokens_obj = req.get("tokens", 8)
         if isinstance(tokens_obj, (int, float, str)):
@@ -181,6 +210,7 @@ def _handle_control(req: dict[str, object]) -> dict[str, object]:
                 tokens = 8
         else:
             tokens = 8
+        pool = _ensure_pool()
         pool.warm(tokens)
         return {"ok": True, "warmed_tokens": tokens}
     return {"error": "unknown_command"}

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import random
+import threading
 from collections import deque
 from queue import SimpleQueue
 from typing import Any
@@ -128,7 +128,9 @@ class EnginePool:
             eng = self.engines[idx]
             match_len = eng.backend.longest_prefix_match_length(prompt_ids)
             load = self._inflight[idx]
-            if match_len > best_match or (match_len == best_match and (best_load is None or load < best_load)):
+            if match_len > best_match or (
+                match_len == best_match and (best_load is None or load < best_load)
+            ):
                 best_match = match_len
                 best_idx = idx
                 best_load = load
@@ -159,7 +161,9 @@ class EnginePool:
                 blocked: set[int] = set()
                 if self.max_inflight_per_engine > 0:
                     blocked = {
-                        idx for idx, load in enumerate(self._inflight) if load >= self.max_inflight_per_engine
+                        idx
+                        for idx, load in enumerate(self._inflight)
+                        if load >= self.max_inflight_per_engine
                     }
 
                 if self.scheduler_mode == "random":
@@ -190,7 +194,9 @@ class EnginePool:
                 try:
                     eng.backend.insert_prefix(prompt)
                 except Exception as exc:
-                    logger.warning("Failed to warm prefix %r on engine %s (%s)", prompt[:50], eng, exc)
+                    logger.warning(
+                        "Failed to warm prefix %r on engine %s (%s)", prompt[:50], eng, exc
+                    )
 
     def enqueue_prefill(self, prompt: str) -> None:
         if not (self.async_prefill_enabled and self._prefill_queue):
@@ -215,13 +221,20 @@ class EnginePool:
             total_inflight = sum(self._inflight)
             scheduler = self.scheduler_mode
             pool_size = len(self.engines)
-        cache_totals = {"prefill_hits": 0, "prefill_misses": 0, "prefix_hits": 0, "prefix_misses": 0}
+        cache_totals = {
+            "prefill_hits": 0,
+            "prefill_misses": 0,
+            "prefix_hits": 0,
+            "prefix_misses": 0,
+        }
         for eng in self.engines:
             stats = eng.backend.cache_metrics()
             for k, v in stats.items():
                 cache_totals[k] = cache_totals.get(k, 0) + v
         avg_latency = sum(self._latencies) / len(self._latencies) if self._latencies else 0.0
-        avg_throughput = sum(self._throughputs) / len(self._throughputs) if self._throughputs else 0.0
+        avg_throughput = (
+            sum(self._throughputs) / len(self._throughputs) if self._throughputs else 0.0
+        )
         return {
             "scheduler": scheduler,
             "pool_size": pool_size,
@@ -232,10 +245,9 @@ class EnginePool:
             "avg_throughput_tok_s": avg_throughput,
         }
 
-    def adapt_max_new_tokens(self, prompt_len: int, requested: int, backend: Any) -> int:
-        """Apply backend cap + optional adaptive downscale under load."""
-        capped = backend.cap_max_new_tokens(prompt_len, requested)
-        max_tokens = capped if capped is not None else requested
+    def adapt_max_new_tokens(self, requested: int) -> int:
+        """Optionally downscale under load; let the engine enforce context caps."""
+        max_tokens = requested
         if not self.adaptive_max_new_tokens:
             return max_tokens
         with self._lock:

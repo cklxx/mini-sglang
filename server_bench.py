@@ -10,7 +10,7 @@ import httpx
 import sglang as _sgl
 from fastapi.testclient import TestClient
 
-from api.server import app as mini_app, backend as mini_backend
+from api.server import app as mini_app, get_pool
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 
 
@@ -28,16 +28,20 @@ TokenizerLike = _EncodesText | _CallableTokenizer
 sgl = cast(Any, _sgl)
 
 
+def _mini_backend():
+    return get_pool().primary_backend
+
+
 def _count_tokens(text: str, tokenizer: TokenizerLike | None) -> int:
     if tokenizer is None:
-        return len(mini_backend.tokenize(text))
+        return len(_mini_backend().tokenize(text))
     if hasattr(tokenizer, "encode"):
         encoder = cast(_EncodesText, tokenizer)
         return len(encoder.encode(text))
     if callable(tokenizer):
         token_fn = cast(_CallableTokenizer, tokenizer)
         return len(token_fn(text))
-    return len(mini_backend.tokenize(text))
+    return len(_mini_backend().tokenize(text))
 
 
 def stream_sglang_http(
@@ -118,7 +122,7 @@ def stream_mini_server(
     ttfb = ttfb if ttfb is not None else time.perf_counter() - start
     duration = time.perf_counter() - start
     text = "".join(chunks)
-    tokens = len(mini_backend.tokenize(text))
+    tokens = len(_mini_backend().tokenize(text))
     return text, ttfb, duration, tokens
 
 

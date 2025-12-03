@@ -251,8 +251,10 @@ class PrefixCache:
                     min_freq = freq
                     candidate = key
             if candidate is not None:
-                self.cache.pop(candidate, None)
+                stored = self.cache.pop(candidate, None)
                 self._freq.pop(candidate, None)
+                if stored is not None:
+                    self._drop_kv(stored)
                 return candidate
         # Default LRU eviction.
         evicted, stored = self.cache.popitem(last=False)
