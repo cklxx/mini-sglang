@@ -10,16 +10,14 @@ from typing import Callable, List, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from optimizations import inference_context
-
 logger = logging.getLogger(__name__)
 
 
-def _resolve_model_path(model_name: str) -> str:
-    """Local resolver to avoid coupling with mini-sglang backend."""
-    local_override = os.getenv("MODEL_LOCAL_DIR")
-    if local_override:
-        logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
+    def _resolve_model_path(model_name: str) -> str:
+        """Local resolver to avoid coupling with mini-sglang backend."""
+        local_override = os.getenv("MODEL_LOCAL_DIR")
+        if local_override:
+            logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
         return local_override
     return model_name
 
@@ -63,21 +61,19 @@ class HFBaseline:
         log_stride = max(1, int(os.getenv("BASELINE_STREAM_LOG_STRIDE", str(log_stride))))
 
         def _generate() -> None:
-            auto_ctx, inf_ctx = inference_context(self.device)
-            with auto_ctx, inf_ctx:
-                self.model.generate(
-                    input_ids=prompt_ids,
-                    attention_mask=attention_mask,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    use_cache=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.eos_token_id,
-                    streamer=streamer,
-                    top_p=None,
-                    top_k=None,
-                    temperature=None,
-                )
+            self.model.generate(
+                input_ids=prompt_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.eos_token_id,
+                streamer=streamer,
+                top_p=None,
+                top_k=None,
+                temperature=None,
+            )
 
         import threading
 
