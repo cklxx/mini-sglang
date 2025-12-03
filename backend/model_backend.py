@@ -70,9 +70,15 @@ class ModelBackend:
         model_kwargs = self._tensor_parallel_kwargs(use_tensor_parallel)
         torch_dtype = self._resolve_torch_dtype()
         self.attn_impl = self._resolve_attn_impl()
+        sgl_available = sgl_kernel_available() and self.device.startswith("cuda")
         self.use_sgl_kernel_requested = self._flag_from_env(
-            "ATTN_BACKEND_SGL_KERNEL", default=self.device.startswith("cuda")
+            "ATTN_BACKEND_SGL_KERNEL", default=sgl_available
         )
+        if self.use_sgl_kernel_requested and not sgl_available:
+            logger.info(
+                "ATTN_BACKEND_SGL_KERNEL=1 but sgl_kernel unavailable; using model-native attention"
+            )
+            self.use_sgl_kernel_requested = False
         if self.use_sgl_kernel_requested and self.attn_impl == "flash_attention_2":
             logger.info("Using sgl_kernel backend; forcing attn_implementation=eager")
             self.attn_impl = "eager"
@@ -537,16 +543,6 @@ class ModelBackend:
         self.page_token_budget = int(os.getenv("PAGE_TOKEN_BUDGET", "0"))
         self.page_size_tokens = int(os.getenv("PAGE_SIZE_TOKENS", "512"))
 
-        if self.attn_impl == "flash_attention_2" or self.use_sgl_kernel_requested:
-            logger.info("Disabling prefill/prefix caches for flash/sgl_kernel attention")
-            self.prefill_cache_size = 0
-            self.prefill_cache_token_budget = 0
-            self.enable_prefix_cache = False
-            self.prefix_cache_size = 0
-            self.prefix_cache_max_tokens = 0
-            self.prefix_cache_token_budget = 0
-            self.page_token_budget = 0
-
         self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
         self.cache_stats = CacheStats()
         self.prefill_cache = PrefillCache(
@@ -621,7 +617,7 @@ class ModelBackend:
     # ------------------------------------------------------------------
 
     def _init_sgl_kernel_backend(self) -> None:
-        use_sgl = self.use_sgl_kernel_requested
+        use_sgl = self.use_sgl_kernel_requested and sgl_kernel_available()
         self._sgl_kernel_backend: SglKernelAttentionBackend | None = None
         self._sgl_kernel_page_state: KVPageState | None = None
         if not use_sgl:
