@@ -14,11 +14,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 logger = logging.getLogger(__name__)
 
 
-    def _resolve_model_path(model_name: str) -> str:
-        """Local resolver to avoid coupling with mini-sglang backend."""
-        local_override = os.getenv("MODEL_LOCAL_DIR")
-        if local_override:
-            logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
+def _resolve_model_path(model_name: str) -> str:
+    """Local resolver to avoid coupling with mini-sglang backend."""
+    local_override = os.getenv("MODEL_LOCAL_DIR")
+    if local_override:
+        logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
         return local_override
     return model_name
 
