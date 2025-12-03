@@ -268,12 +268,19 @@ class ModelBackend:
         """Optional attention implementation override."""
         attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
         if attn_impl is None:
-            return None
+            # Default to flash attention when on CUDA if not specified.
+            if self.device.startswith("cuda") and os.getenv("ENABLE_FLASH_ATTENTION", "1") != "0":
+                attn_impl = "flash_attention_2"
+            else:
+                return None
         attn_impl = attn_impl.lower()
-        valid = {"flash_attention_2", "sdpa", "eager"}
+        valid = {"flash_attention_2", "sdpa", "eager", "fa3"}
         if attn_impl not in valid:
             logger.warning("Unrecognized ATTN_IMPL=%s; expected one of %s", attn_impl, ", ".join(sorted(valid)))
             return None
+        if attn_impl == "fa3":
+            # Transformers uses flash_attention_2 keyword; keep fa3 as alias.
+            attn_impl = "flash_attention_2"
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
 
