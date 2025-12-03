@@ -73,6 +73,7 @@ class SGLangMiniEngine:
             if first_token_id == eos_token_id or max_tokens == 1:
                 finished = True
             else:
+                t_decode_start = time.perf_counter()
                 for step_index in range(max_tokens - 1):
                     if finished:
                         break
@@ -92,9 +93,11 @@ class SGLangMiniEngine:
                             finished = True
                             break
                     last_token_id = generated_ids[-1]
+                    step_start = time.perf_counter()
                     next_token_id, kv_cache = self.backend.decode_forward(
                         last_token_id, kv_cache, use_context=False
                     )
+                    step_end = time.perf_counter()
                     generated_ids.append(next_token_id)
                     if next_token_id == eos_token_id:
                         finished = True
@@ -106,21 +109,23 @@ class SGLangMiniEngine:
                     )
                     if should_log:
                         logger.info(
-                            "Decode step %d emitted token_id=%d text=%r finished=%s",
+                            "Decode step %d emitted token_id=%d text=%r finished=%s step_time=%.4fs",
                             step_index,
                             next_token_id,
                             text_delta,
                             finished,
+                            step_end - step_start,
                         )
                     stream_callback(text_delta)
                     text_chunks.append(text_delta)
+                t_decode_end = time.perf_counter()
 
             # We already decoded per-step deltas; join them instead of re-decoding full ids.
             full_text = "".join(text_chunks)
             finished = True
         t_end = time.perf_counter()
         prefill_time = (t_prefill_end - t_prefill_start) if "t_prefill_end" in locals() else 0.0
-        decode_time = max(0.0, t_end - t_prefill_end)
+        decode_time = (t_decode_end - t_decode_start) if "t_decode_end" in locals() else 0.0
         total_time = t_end - t_start
         decode_tokens = max(0, len(generated_ids) - 1)
         throughput = (len(generated_ids) / total_time) if total_time > 0 else 0.0
