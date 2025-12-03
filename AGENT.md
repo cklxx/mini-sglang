@@ -1,4 +1,3 @@
-# 开发约定
+# Agent Guidelines
 
-1) 代码要保持绝对的优雅，责任边界绝对清晰：函数/模块只做一件事，避免重复工作和隐式副作用。
-
+1) Code must be absolutely elegant with crystal-clear ownership: each function/module does one thing, avoids duplication, and has no hidden side effects.
