@@ -85,6 +85,9 @@ class ModelBackend:
                 "Flash attention requires float16/bfloat16; falling back to sdpa for torch_dtype=float32"
             )
             self.attn_impl = "sdpa"
+        if self.attn_impl == "flash_attention_2" and self.enable_static_kv:
+            logger.info("Disabling StaticCache when using flash attention")
+            self.enable_static_kv = False
 
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
@@ -421,6 +424,34 @@ class ModelBackend:
         if isinstance(obj, (list, tuple)) and len(obj) > 0:
             return self._first_tensor_dtype(obj[0])
         return None
+
+    def _coerce_static_cache_dtype(
+        self, cache: StaticCache | None, dtype: torch.dtype
+    ) -> StaticCache | None:
+        """Ensure StaticCache k/v tensors match the desired dtype."""
+        if cache is None:
+            return None
+        try:
+            current = self._cache_values_dtype(cache)
+            if current == dtype:
+                return cache
+            if hasattr(cache, "values") and torch.is_tensor(cache.values):
+                cache.values = cache.values.to(dtype=dtype)
+            if hasattr(cache, "keys") and torch.is_tensor(cache.keys):
+                cache.keys = cache.keys.to(dtype=dtype)
+            current = self._cache_values_dtype(cache)
+            if current == dtype:
+                logger.info("Coerced StaticCache dtype to %s", dtype)
+                return cache
+            logger.warning(
+                "Failed to coerce StaticCache dtype (cache=%s expected=%s); disabling static KV",
+                current,
+                dtype,
+            )
+            return None
+        except Exception as exc:
+            logger.warning("Failed to coerce StaticCache dtype (%s); disabling static KV", exc)
+            return None
 
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""
@@ -777,10 +808,16 @@ class ModelBackend:
         if self._static_cache is not None:
             cached_dtype = self._cache_values_dtype(self._static_cache)
             if cached_dtype == cache_dtype:
-                return self._static_cache
+                coerced = self._coerce_static_cache_dtype(self._static_cache, cache_dtype)
+                if coerced is not None:
+                    self._static_cache = coerced
+                    return self._static_cache
             if cached_dtype is None:
-                # Cache was never populated; keep it and let first use decide dtype.
-                return self._static_cache
+                # Cache was never populated; coerce and reuse.
+                coerced = self._coerce_static_cache_dtype(self._static_cache, cache_dtype)
+                if coerced is not None:
+                    self._static_cache = coerced
+                    return self._static_cache
             logger.info(
                 "Reinitializing StaticCache for dtype change (cache=%s expected=%s)",
                 cached_dtype,
@@ -801,6 +838,12 @@ class ModelBackend:
             )
             created_dtype = self._cache_values_dtype(self._static_cache)
             if created_dtype is None:
+                coerced = self._coerce_static_cache_dtype(self._static_cache, cache_dtype)
+                if coerced is None:
+                    self.enable_static_kv = False
+                    self._static_cache = None
+                    return None
+                self._static_cache = coerced
                 return self._static_cache
             if created_dtype != cache_dtype:
                 logger.warning(
@@ -821,6 +864,12 @@ class ModelBackend:
                 )
                 cached_dtype = self._cache_values_dtype(self._static_cache)
                 if cached_dtype is None:
+                    coerced = self._coerce_static_cache_dtype(self._static_cache, cache_dtype)
+                    if coerced is None:
+                        self.enable_static_kv = False
+                        self._static_cache = None
+                        return None
+                    self._static_cache = coerced
                     return self._static_cache
                 if cached_dtype is not None and cached_dtype != cache_dtype:
                     logger.warning(
