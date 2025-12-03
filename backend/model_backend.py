@@ -380,19 +380,28 @@ class ModelBackend:
         return "qwen3" in name or cfg_type == "qwen3"
 
     def _maybe_optimize_qwen_attention(self) -> None:
-        """Enable flash attention flags for Qwen3 when possible."""
+        """Tune Qwen3 attention flags to match chosen implementation."""
         if self.model is None or not self._is_qwen3():
             return
         cfg = getattr(self.model, "config", None)
         if cfg is None:
+            return
+        if self.attn_impl != "flash_attention_2":
+            disabled = False
+            if hasattr(cfg, "use_flash_attn") and cfg.use_flash_attn:
+                cfg.use_flash_attn = False
+                disabled = True
+            if hasattr(cfg, "flash_attn") and getattr(cfg, "flash_attn"):
+                cfg.flash_attn = False
+                disabled = True
+            if disabled:
+                logger.info("Disabled Qwen3 flash attention flags (attn_impl=%s)", self.attn_impl)
             return
         if not self.device.startswith("cuda"):
             logger.info(
                 "Qwen3 model detected but flash attention requires CUDA; device=%s",
                 self.device,
             )
-            return
-        if self.attn_impl != "flash_attention_2":
             return
         toggled = False
         if hasattr(cfg, "use_flash_attn") and cfg.use_flash_attn is False:
@@ -438,6 +447,8 @@ class ModelBackend:
             return None
         try:
             current = self._cache_values_dtype(cache)
+            if current is None:
+                return cache
             if current == dtype:
                 return cache
             if hasattr(cache, "values") and torch.is_tensor(cache.values):
