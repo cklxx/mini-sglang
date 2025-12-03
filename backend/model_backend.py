@@ -50,6 +50,7 @@ class ModelBackend:
 
         self.device = device
         self.model_name = model_name
+        self.hf_token = self._resolve_hf_token()
         compile_enabled = self._flag_from_env("COMPILE_MODEL", default=compile_model)
         self.tensor_parallel_size = self._resolve_tensor_parallel_size()
         use_tensor_parallel = self._can_use_tensor_parallel()
@@ -298,6 +299,17 @@ class ModelBackend:
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
 
+    def _resolve_hf_token(self) -> str | None:
+        token = (
+            os.getenv("HF_TOKEN")
+            or os.getenv("HUGGINGFACE_TOKEN")
+            or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+            or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        )
+        if token:
+            logger.info("Using Hugging Face token from environment for gated model access")
+        return token
+
     def _is_qwen3(self) -> bool:
         """Detect Qwen3 models by name or config."""
         name = self.model_name.lower()
@@ -332,6 +344,8 @@ class ModelBackend:
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""
         base_kwargs: Dict[str, Any] = {}
+        if self.hf_token:
+            base_kwargs["token"] = self.hf_token
         if trust_remote_code:
             base_kwargs["trust_remote_code"] = True
         try:
@@ -342,7 +356,9 @@ class ModelBackend:
             logger.warning(
                 "Retrying tokenizer load with trust_remote_code=True after failure: %s", exc
             )
-            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+            retry_kwargs = dict(base_kwargs)
+            retry_kwargs["trust_remote_code"] = True
+            tokenizer = AutoTokenizer.from_pretrained(model_path, **retry_kwargs)
         if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
         return tokenizer
@@ -364,6 +380,8 @@ class ModelBackend:
                 raise
 
         base_kwargs = dict(model_kwargs)
+        if self.hf_token:
+            base_kwargs["token"] = self.hf_token
         if trust_remote_code:
             base_kwargs["trust_remote_code"] = True
         try:

@@ -115,7 +115,7 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen3-0.6B-Instruct`). Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen3-0.6B-Instruct`). Qwen3 is a gated repo: export a token via `HF_TOKEN`/`HUGGINGFACE_HUB_TOKEN` (or override `MODEL_NAME` to an open model) to avoid 401s. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 
