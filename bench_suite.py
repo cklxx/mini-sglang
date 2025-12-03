@@ -121,11 +121,12 @@ def _run_suite(
 
         def run_batch(use_hf: bool, workers: int) -> list[tuple[float, float, int]]:
             samples: list[tuple[float, float, int]] = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [
-                    pool.submit(
-                        _run_once,
-                        f"{wl.name}-{'hf' if use_hf else 'mini'}-{i}",
+            for i in range(workers * repeat):
+                tag = "hf" if use_hf else "mini"
+                print(f"  [{tag}] {wl.name} run {i + 1}/{workers * repeat}")
+                samples.append(
+                    _run_once(
+                        f"{wl.name}-{tag}-{i}",
                         prompts[i % len(prompts)],
                         wl.max_new_tokens,
                         engine,
@@ -133,13 +134,7 @@ def _run_suite(
                         hf_runner,
                         use_hf,
                     )
-                    for i in range(workers * repeat)
-                ]
-                for idx, fut in enumerate(concurrent.futures.as_completed(futs), 1):
-                    tag = "hf" if use_hf else "mini"
-                    total = workers * repeat
-                    print(f"  [{tag}] {wl.name} run {idx}/{total}")
-                    samples.append(fut.result())
+                )
             return samples
 
         hf_workers = max(1, int(os.getenv("BENCH_HF_CONCURRENCY", "1")))
@@ -167,7 +162,7 @@ def _run_suite(
 def main() -> None:
     repeat = max(1, int(os.getenv("BENCH_REPEAT", "3")))
     warmup = max(0, int(os.getenv("BENCH_WARMUP", "1")))
-    concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "4")))
+    concurrency = 1
     mixed_prompts = os.getenv("BENCH_MIXED_PROMPTS", "1") != "0"
     log_level = os.getenv("BENCH_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
