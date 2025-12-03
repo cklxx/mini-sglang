@@ -289,6 +289,10 @@ class ModelBackend:
         """Optional dtype override for model weights."""
         dtype_str = os.getenv("MODEL_DTYPE") or os.getenv("TORCH_DTYPE")
         if dtype_str is None:
+            # Default to float16 on GPU/MPS to avoid autocast/dtype mismatches.
+            if self.device.startswith("cuda") or self.device == "mps":
+                logger.info("Defaulting torch_dtype=float16 for device=%s", self.device)
+                return torch.float16
             return None
         key = dtype_str.lower()
         mapping = {
