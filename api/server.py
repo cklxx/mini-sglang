@@ -21,7 +21,6 @@ from backend.model_backend import ModelBackend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
 from multi_device import EnginePool
-from optimizations import warmup_engine
 from ipc.zmq_control import start_control_server
 
 logging.basicConfig(
@@ -117,13 +116,14 @@ def generate(request: GenerateRequest):
             requested_tokens = request.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
             engine, lease = pool.pick(prompt_ids=prompt_ids)
             max_tokens = pool.adapt_max_new_tokens(len(prompt_ids), requested_tokens, engine.backend)
+            generated_text: str = ""
             try:
-                generated_text = ""
                 if mode == "sglang":
                     generated_text = engine.run_generate(
                         prompt=request.prompt,
                         max_new_tokens=max_tokens,
                         stream_callback=stream_callback,
+                        prompt_ids=prompt_ids,
                     )
                 else:
                     generated_text, _ = engine.backend.generate_streaming_baseline(
@@ -167,12 +167,20 @@ def metrics():
     return JSONResponse(pool.metrics())
 
 
-def _handle_control(req: dict) -> dict:
-    cmd = (req.get("cmd") or "").lower()
+def _handle_control(req: dict[str, object]) -> dict[str, object]:
+    raw_cmd = req.get("cmd") or ""
+    cmd = str(raw_cmd).lower()
     if cmd == "metrics":
         return pool.metrics()
     if cmd == "warm":
-        tokens = int(req.get("tokens", 8))
+        tokens_obj = req.get("tokens", 8)
+        if isinstance(tokens_obj, (int, float, str)):
+            try:
+                tokens = int(tokens_obj)
+            except Exception:
+                tokens = 8
+        else:
+            tokens = 8
         pool.warm(tokens)
         return {"ok": True, "warmed_tokens": tokens}
     return {"error": "unknown_command"}

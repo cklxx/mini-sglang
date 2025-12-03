@@ -47,9 +47,10 @@ class SGLangMiniEngine:
         prompt: str,
         max_new_tokens: Optional[int],
         stream_callback: Callable[[str], None],
+        prompt_ids: Optional[list[int]] = None,
     ) -> str:
         """Generate text using prefill + decode while invoking a stream callback."""
-        prompt_ids = self.backend.tokenize(prompt)
+        prompt_ids = prompt_ids if prompt_ids is not None else self.backend.tokenize(prompt)
         requested_tokens = max_new_tokens or self.max_new_tokens_default
         max_tokens = self.backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
         if max_tokens is None:
