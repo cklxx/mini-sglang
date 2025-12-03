@@ -15,6 +15,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers.cache_utils import StaticCache
+from contextlib import nullcontext
 
 try:
     from transformers.utils import is_flash_attn_2_available
@@ -51,6 +53,17 @@ class ModelBackend:
         self.device = device
         self.model_name = model_name
         compile_enabled = self._flag_from_env("COMPILE_MODEL", default=compile_model)
+        self.enable_static_kv = self._flag_from_env(
+            "ENABLE_STATIC_KV", default=self.device.startswith("cuda")
+        )
+        self.static_kv_max_len = int(os.getenv("STATIC_KV_MAX_LEN", "0"))
+        self._static_kv_budget = int(os.getenv("STATIC_KV_DEFAULT_BUDGET", "2048"))
+        self.enable_cuda_graph = (
+            self.device.startswith("cuda") and os.getenv("ENABLE_CUDA_GRAPH", "1") != "0"
+        )
+        self.prefill_graph_seq_len = int(os.getenv("PREFILL_GRAPH_SEQ_LEN", "0"))
+        self.prefill_graph_max_len = int(os.getenv("PREFILL_GRAPH_MAX_LEN", "2048"))
+        self._prefill_graph_dynamic_len = self.prefill_graph_seq_len <= 0
         self.tensor_parallel_size = self._resolve_tensor_parallel_size()
         use_tensor_parallel = self._can_use_tensor_parallel()
         model_kwargs = self._tensor_parallel_kwargs(use_tensor_parallel)
@@ -81,6 +94,8 @@ class ModelBackend:
         self._init_caches()
         self._init_chunked_prefill()
         self._init_decode_buffer()
+        self._static_cache: StaticCache | None = None
+        self._init_cuda_graph_state()
         self._detect_dynamic_cache()
         self._init_generation_config()
 
@@ -116,16 +131,28 @@ class ModelBackend:
     # Streaming-friendly forward passes (prefill + decode)
     # ------------------------------------------------------------------
 
-    def _prefill_call(self, input_ids: torch.Tensor, past_key_values: Any | None):
-        auto_ctx, inf_ctx = inference_context(self.device)
+    def _prefill_call(
+        self, input_ids: torch.Tensor, past_key_values: Any | None, use_context: bool = True
+    ):
+        if use_context:
+            auto_ctx, inf_ctx = inference_context(self.device)
+        else:
+            auto_ctx, inf_ctx = nullcontext(), nullcontext()
         with auto_ctx, inf_ctx:
             return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
 
-    def _decode_call(self, input_ids: torch.Tensor, past_key_values: Any) -> Any:
+    def _decode_call(
+        self, input_ids: torch.Tensor, past_key_values: Any, use_context: bool = True
+    ) -> Any:
         """Decode step (single-token decode)."""
-        return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
+        if use_context:
+            auto_ctx, inf_ctx = inference_context(self.device)
+        else:
+            auto_ctx, inf_ctx = nullcontext(), nullcontext()
+        with auto_ctx, inf_ctx:
+            return self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
 
-    def prefill_forward(self, prompt_ids: List[int]) -> Tuple[int, Any]:
+    def prefill_forward(self, prompt_ids: List[int], use_context: bool = True) -> Tuple[int, Any]:
         """Run the prefill (first) forward pass with KV cache enabled."""
         seq_len = len(prompt_ids)
         logger.info(
@@ -145,9 +172,16 @@ class ModelBackend:
             logger.info(
                 "Prefix cache hit for seq_len=%d using prefix_len=%d", len(prompt_ids), len(tokens)
             )
-            logits, kv_cache = self._prefill_run(remaining_ids, past_key_values=cached_kv)
+            logits, kv_cache = self._prefill_run(
+                remaining_ids, past_key_values=cached_kv, use_context=use_context
+            )
         else:
-            logits, kv_cache = self._prefill_run(prompt_ids, past_key_values=None)
+            initial_cache = self._maybe_init_static_cache(len(prompt_ids))
+            logits, kv_cache = self._prefill_run(
+                prompt_ids, past_key_values=initial_cache, use_context=use_context
+            )
+        if isinstance(kv_cache, StaticCache):
+            self._static_cache = kv_cache
         first_token_id = int(torch.argmax(logits, dim=-1).item())
 
         self._update_prefill_cache(prompt_ids, first_token_id, kv_cache)
@@ -159,7 +193,9 @@ class ModelBackend:
         )
         return first_token_id, kv_cache
 
-    def decode_forward(self, last_token_id: int, kv_cache: Any) -> Tuple[int, Any]:
+    def decode_forward(
+        self, last_token_id: int, kv_cache: Any, use_context: bool = True
+    ) -> Tuple[int, Any]:
         """Run a single decode step using the existing KV cache."""
         if self._decode_buffer is not None:
             self._decode_buffer[0, 0] = last_token_id
@@ -171,12 +207,12 @@ class ModelBackend:
             last_token_id,
             self.decode_tokens([last_token_id]),
         )
-        auto_ctx, inf_ctx = inference_context(self.device)
-        with auto_ctx, inf_ctx:
-            outputs = self._decode_call(input_ids, kv_cache)
+        outputs = self._decode_call(input_ids, kv_cache, use_context=use_context)
         logits = outputs.logits[:, -1, :]
         next_token_id = torch.argmax(logits, dim=-1).item()
         new_kv_cache = outputs.past_key_values
+        if isinstance(new_kv_cache, StaticCache):
+            self._static_cache = new_kv_cache
         next_token_id = int(next_token_id)
         logger.debug(
             "Decode step produced next_token_id=%d (text=%r)",
@@ -422,6 +458,22 @@ class ModelBackend:
             else None
         )
 
+    def _init_cuda_graph_state(self) -> None:
+        self._prefill_graph = None
+        self._prefill_graph_input: torch.Tensor | None = None
+        self._prefill_graph_logits: torch.Tensor | None = None
+        self._prefill_graph_kv: Any | None = None
+        if self.enable_cuda_graph and self.prefill_graph_seq_len > 0:
+            logger.info(
+                "CUDA graph prefill enabled for seq_len=%d", self.prefill_graph_seq_len
+            )
+        elif self.enable_cuda_graph:
+            logger.info(
+                "CUDA graph requested; will capture first-seen prompt len "
+                "if <= PREFILL_GRAPH_MAX_LEN=%d",
+                self.prefill_graph_max_len,
+            )
+
     def _init_generation_config(self) -> None:
         self.aggressive_max_new_tokens = self._flag_from_env("AGGRESSIVE_MAX_NEW_TOKENS", True)
         self.max_context_margin = int(os.getenv("MAX_CONTEXT_MARGIN", "16"))
@@ -459,11 +511,47 @@ class ModelBackend:
     def _update_prefix_cache(self, prompt_ids: List[int], kv_cache: Any) -> None:
         self.prefix_cache.update(prompt_ids, kv_cache)
 
-    def _prefill_run(self, token_ids: List[int], past_key_values: Any | None):
+    def _prefill_run(
+        self, token_ids: List[int], past_key_values: Any | None, use_context: bool = True
+    ):
         """Run prefill with optional chunking to reduce peak memory for long prompts."""
 
         if len(token_ids) == 0:
             raise ValueError("prefill_run requires at least one token")
+
+        # If dynamic length capture is allowed, bind graph length to the first prompt
+        # (bounded by PREFILL_GRAPH_MAX_LEN); otherwise keep disabled.
+        if (
+            self.enable_cuda_graph
+            and self._prefill_graph_dynamic_len
+            and self.prefill_graph_seq_len <= 0
+        ):
+            if len(token_ids) <= self.prefill_graph_max_len:
+                self.prefill_graph_seq_len = len(token_ids)
+                self._prefill_graph_dynamic_len = False
+                logger.info(
+                    "Binding CUDA graph prefill seq_len to first prompt len=%d",
+                    self.prefill_graph_seq_len,
+                )
+            else:
+                logger.info(
+                    "Skipping CUDA graph capture; prompt len=%d exceeds PREFILL_GRAPH_MAX_LEN=%d",
+                    len(token_ids),
+                    self.prefill_graph_max_len,
+                )
+                self.enable_cuda_graph = False
+
+        use_graph = (
+            self.enable_cuda_graph
+            and self.prefill_graph_seq_len > 0
+            and len(token_ids) == self.prefill_graph_seq_len
+            and past_key_values is None
+            and use_context
+        )
+        if use_graph:
+            logits, kv_cache = self._prefill_run_with_graph(token_ids)
+            if logits is not None and kv_cache is not None:
+                return logits, kv_cache
 
         if self.chunked_prefill_enabled and len(token_ids) > self.prefill_chunk_size:
             kv_cache = past_key_values
@@ -476,15 +564,79 @@ class ModelBackend:
             for start in range(0, len(token_ids), self.prefill_chunk_size):
                 end = start + self.prefill_chunk_size
                 chunk = torch.as_tensor(token_ids[start:end], device=self.device).unsqueeze(0)
-                outputs = self._prefill_call(chunk, past_key_values=kv_cache)
+                outputs = self._prefill_call(
+                    chunk, past_key_values=kv_cache, use_context=use_context
+                )
                 logits = outputs.logits[:, -1, :]
                 kv_cache = outputs.past_key_values
             assert logits is not None
             return logits, kv_cache
 
         input_ids = torch.as_tensor(token_ids, device=self.device).unsqueeze(0)
-        outputs = self._prefill_call(input_ids, past_key_values=past_key_values)
+        outputs = self._prefill_call(
+            input_ids, past_key_values=past_key_values, use_context=use_context
+        )
         return outputs.logits[:, -1, :], outputs.past_key_values
+
+    # ------------------------------------------------------------------
+    # CUDA graph helpers (prefill only; fixed shapes)
+    # ------------------------------------------------------------------
+    def _prefill_run_with_graph(self, token_ids: List[int]):
+        if self._prefill_graph is None:
+            if not torch.cuda.is_available():
+                return None, None
+            if len(token_ids) != self.prefill_graph_seq_len:
+                return None, None
+            try:
+                # Static input for capture; values are overwritten per replay.
+                self._prefill_graph_input = torch.empty(
+                    (1, self.prefill_graph_seq_len), device=self.device, dtype=torch.long
+                )
+                self._prefill_graph_input[0, : len(token_ids)] = torch.as_tensor(
+                    token_ids, device=self.device
+                )
+                # Warmup once to prime CUDA memory pools.
+                with torch.no_grad():
+                    self.model(
+                        input_ids=self._prefill_graph_input,
+                        past_key_values=None,
+                        use_cache=True,
+                    )
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    outputs = self.model(
+                        input_ids=self._prefill_graph_input,
+                        past_key_values=None,
+                        use_cache=True,
+                    )
+                    self._prefill_graph_logits = outputs.logits
+                    self._prefill_graph_kv = outputs.past_key_values
+                self._prefill_graph = graph
+                logger.info(
+                    "Captured CUDA graph for prefill | seq_len=%d", self.prefill_graph_seq_len
+                )
+            except Exception as exc:
+                logger.warning(
+                    "CUDA graph capture failed; disabling graph path (%s)", exc
+                )
+                self.enable_cuda_graph = False
+                self._prefill_graph = None
+                return None, None
+
+        if self._prefill_graph is None or self._prefill_graph_input is None:
+            return None, None
+
+        self._prefill_graph_input[0, : len(token_ids)] = torch.as_tensor(
+            token_ids, device=self.device
+        )
+        try:
+            self._prefill_graph.replay()
+        except Exception as exc:
+            logger.warning("CUDA graph replay failed; disabling graph path (%s)", exc)
+            self.enable_cuda_graph = False
+            self._prefill_graph = None
+            return None, None
+        return self._prefill_graph_logits, self._prefill_graph_kv
 
     def cap_max_new_tokens(self, prompt_len: int, requested: int | None) -> int | None:
         """Cap max_new_tokens to fit within the model's context window (best-effort)."""
@@ -507,6 +659,28 @@ class ModelBackend:
             )
             return safe_budget
         return requested
+
+    def _maybe_init_static_cache(self, prompt_len: int) -> StaticCache | None:
+        if not self.enable_static_kv:
+            return None
+        if self._static_cache is not None:
+            return self._static_cache
+        max_len = self.static_kv_max_len
+        if max_len <= 0:
+            max_len = self.max_context_length or (prompt_len + self._static_kv_budget)
+        if max_len <= 0:
+            # As a last resort, disable static cache if we cannot determine a safe length.
+            self.enable_static_kv = False
+            return None
+        try:
+            self._static_cache = StaticCache(config=self.model.config, max_cache_len=max_len)
+            logger.info("Initialized StaticCache | max_cache_len=%d", max_len)
+            return self._static_cache
+        except Exception as exc:
+            logger.warning("Failed to init StaticCache; disabling static KV (%s)", exc)
+            self.enable_static_kv = False
+            self._static_cache = None
+            return None
 
     def insert_prefix(self, prompt: str) -> None:
         """Prefill and store a prompt's KV in the prefix cache for later reuse."""

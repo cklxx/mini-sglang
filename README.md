@@ -1,26 +1,23 @@
 # mini-sglang
 
-A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks now compare real `sglang`, this mini stack, and a plain Hugging Face streaming baseline in both local and HTTP server modes. For the full upstream project and docs, see [sglang on GitHub](https://github.com/sgl-project/sglang).
+A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks compare this mini stack to a plain Hugging Face streaming baseline. For the full upstream project and docs, see [sglang on GitHub](https://github.com/sgl-project/sglang).
 
 ### Quickstart
 
-Install dependencies from `requirements.txt` or the committed `pyproject.toml` and run the two benchmark scripts:
+Install dependencies from `requirements.txt` or the committed `pyproject.toml` and run the concurrent benchmark:
 
 ```bash
-# Local mode: sglang Runtime vs mini-sglang vs HF streaming
-python local_bench.py --max-new-tokens 128 "Hello mini-sglang"
-
-# Server mode: sglang HTTP endpoint vs the FastAPI demo (sglang + HF modes)
-python server_bench.py --max-new-tokens 128 "Hello mini-sglang"
+# Concurrent benchmark (short/medium/long prompts; defaults need no flags)
+python bench_suite.py
 ```
 
-Both scripts default to the model in `MODEL_NAME` and allow overrides via `--model`. The server benchmark will start a local `sglang.Runtime` if you do not supply `--sglang-url`.
+Defaults use the model in `MODEL_NAME`. Tune repeat/warmup/concurrency via env vars if needed.
 
 ### Performance levers (enabled by default unless noted)
 
-- **Caches**: prefix/prefill KV caches with radix longest-prefix lookup, LRU/LFU eviction, token budgets, page spill (`PAGE_TOKEN_BUDGET`), and manual seeding via `insert_prefix`. Chunked prefill is optional (`CHUNKED_PREFILL=1`); legacy/static KV enforced to avoid DynamicCache.
+- **Caches**: prefix/prefill KV caches with radix longest-prefix lookup, LRU/LFU eviction, token budgets, page spill (`PAGE_TOKEN_BUDGET`), and manual seeding via `insert_prefix`. Chunked prefill is optional (`CHUNKED_PREFILL=1`); static KV (`ENABLE_STATIC_KV=1`) defaults on for CUDA using `StaticCache` with auto-fallback.
 - **Scheduling & backpressure**: round robin / fsfs / random / cache-aware dispatch (`SCHEDULER_MODE`), inflight caps (`MAX_INFLIGHT_TOTAL`, `MAX_INFLIGHT_PER_ENGINE`), adaptive `max_new_tokens` downscale under load, async prefix warmup (`WARM_PREFIXES`, `ASYNC_PREFILL_QUEUE`).
-- **Fast paths**: chunked prefill optional (`CHUNKED_PREFILL=1`), fast decode via HF streaming (`ENGINE_FAST_DECODE=1`, default非CUDA), CUDA graphs when safe (`ENABLE_CUDA_GRAPH`, `ENABLE_DECODE_CUDA_GRAPH`).
+- **Fast paths**: chunked prefill optional (`CHUNKED_PREFILL=1`). Experimental CUDA graph capture on CUDA: enabled by default (`ENABLE_CUDA_GRAPH=1`), captures prefill for the first prompt length (or explicit `PREFILL_GRAPH_SEQ_LEN`) up to `PREFILL_GRAPH_MAX_LEN` (default 2048), and auto-falls-back on errors or mismatched lengths. Goal: extend to decode/flash-attn without HF shortcuts.
 - **Model loading**: tensor parallel (`TENSOR_PARALLEL_SIZE`), dtype override (`MODEL_DTYPE`/`TORCH_DTYPE`), attention impl (`ATTN_IMPL`, 默认CUDA上启用 `flash_attention_2` 可通过 `ENABLE_FLASH_ATTENTION` 控制), torch.compile (`COMPILE_MODEL`/`COMPILE_MODE`), aggressive context-safe `max_new_tokens` capping.
 - **Observability & control**: GET `/metrics` for scheduler/inflight/cache stats and rolling latency/throughput; per-request logs include cache hit/miss counters. Optional ZMQ control channel (`ZMQ_CONTROL=1`, `ZMQ_CONTROL_ENDPOINT`) supports metrics/warm commands.
 
@@ -33,8 +30,7 @@ backend/cache.py         # cache utilities (prefill/prefix LRU + radix index)
 engine/engine.py       # (sglang engine analogue) prefill + decode orchestration
 api/server.py          # (sglang API analogue) FastAPI server exposing POST /generate
 cli_demo.py            # Minimal client to stream tokens in a terminal
-local_bench.py         # Local benchmark: sglang Runtime vs mini-sglang vs HF streaming
-server_bench.py        # HTTP benchmark: sglang server vs mini-sglang FastAPI (sglang + HF modes)
+bench_suite.py         # Concurrent benchmark: mini-sglang vs HF streaming (single entrypoint)
 ```
 
 ## Usage
@@ -64,11 +60,11 @@ python smoke_test.py --max-new-tokens 32 "Hello from mini-sglang"
 ```
 The streaming run exercises the full prefill + decode path and streams tokens to stdout. For non-sglang baselines, use the comparison or benchmark scripts below.
 
-Run the local benchmark comparing sglang Runtime, mini-sglang, and the HF streaming baseline:
+Run the concurrent benchmark comparing mini-sglang and the HF streaming baseline across short/medium/long prompts with repeats:
 ```bash
-python local_bench.py --max-new-tokens 64 "Benchmarking mini-sglang"
+python bench_suite.py
 ```
-The benchmark prints token counts, wall-clock duration, and throughput for all three so you can evaluate orchestration overhead.
+Defaults: repeat=3, warmup=1, concurrency=4, mixed prompts on. Tune via env `BENCH_REPEAT`/`BENCH_WARMUP`/`BENCH_CONCURRENCY`/`BENCH_MIXED_PROMPTS` as needed.
 
 Logs at INFO level narrate every prefill/decode stream chunk so beginners can follow the full flow. Summaries include token counts and throughput for each path.
 When no flags are provided the local benchmark now uses a longer workload by default
@@ -95,13 +91,7 @@ Responses are JSON lines streamed chunk-by-chunk, e.g.:
 {"event": "done"}
 ```
 
-The HTTP API is streaming-only; for non-sglang baselines use `local_bench.py` or `server_bench.py`.
-
-Benchmark the server path (TTFB + throughput):
-```bash
-python server_bench.py --max-new-tokens 128
-```
-The server benchmark prints three views side-by-side so you can see how the streaming FastAPI path compares to the HF streaming baseline **and** a real `sglang` server (started automatically when no URL is supplied).
+The HTTP API is streaming-only.
 
 Multi-device CUDA (round robin):
 - Enabled by default when multiple CUDA GPUs exist (`ENABLE_MULTI_DEVICE=0` to force single device).
