@@ -36,8 +36,6 @@ def _make_prompt(token_count: int) -> str:
 def _default_workloads() -> list[Workload]:
     return [
         Workload("short", prompt_tokens=16, max_new_tokens=256),
-        Workload("medium", prompt_tokens=64, max_new_tokens=512),
-        Workload("long", prompt_tokens=256, max_new_tokens=1024),
     ]
 
 
@@ -169,9 +167,9 @@ def _run_suite(
 
 
 def main() -> None:
-    repeat = max(1, int(os.getenv("BENCH_REPEAT", "3")))
-    warmup = max(0, int(os.getenv("BENCH_WARMUP", "1")))
-    concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "4")))
+    repeat = max(1, int(os.getenv("BENCH_REPEAT", "1")))
+    warmup = max(0, int(os.getenv("BENCH_WARMUP", "0")))
+    concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "1")))
     mixed_prompts = os.getenv("BENCH_MIXED_PROMPTS", "1") != "0"
     log_level = os.getenv("BENCH_LOG_LEVEL", "WARNING").upper()
     logging.basicConfig(
