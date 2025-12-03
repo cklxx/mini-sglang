@@ -128,7 +128,11 @@ class PrefillCache:
         first_token_id, cached_kv, prompt_len = self.cache.pop(prompt_key)
         self.cache[prompt_key] = (first_token_id, cached_kv, prompt_len)
         stats.prefill_hits += 1
-        logger.info("Prefill cache hit for seq_len=%d (first_token_id=%d)", len(prompt_ids), first_token_id)
+        logger.info(
+            "Prefill cache hit for seq_len=%d (first_token_id=%d)",
+            len(prompt_ids),
+            first_token_id,
+        )
         return int(first_token_id), cached_kv
 
     def update(self, prompt_ids: List[int], first_token_id: int, kv_cache: Any) -> None:
@@ -173,7 +177,9 @@ class PrefixCache:
     def bind_page_manager(self, page_mgr: KVPageManager | None) -> None:
         self._page_mgr = page_mgr
 
-    def maybe_get(self, prompt_ids: List[int], stats: CacheStats) -> tuple[Tuple[int, ...], Any] | None:
+    def maybe_get(
+        self, prompt_ids: List[int], stats: CacheStats
+    ) -> tuple[Tuple[int, ...], Any] | None:
         if not (self.enable and self.size > 0):
             return None
         match = self._trie.longest_prefix(prompt_ids)

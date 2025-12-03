@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from typing import Any, Callable, Dict
-
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +71,9 @@ class ZMQControlServer:
                 logger.debug("Control server loop error: %s", exc)
 
 
-def start_control_server(endpoint: str, handler: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
+def start_control_server(
+    endpoint: str, handler: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> None:
     server = ZMQControlServer(endpoint=endpoint, on_request=handler) if zmq else _NoopControl()
     server.start()
 

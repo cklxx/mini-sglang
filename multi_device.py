@@ -257,7 +257,8 @@ class EnginePool:
             new_tokens = max(1, int(max_tokens * factor))
             if new_tokens < max_tokens:
                 logger.info(
-                    "Adaptive max_new_tokens downscale | from=%d to=%d inflight=%d threshold=%d factor=%.2f",
+                    "Adaptive max_new_tokens downscale | from=%d to=%d inflight=%d "
+                    "threshold=%d factor=%.2f",
                     max_tokens,
                     new_tokens,
                     total,

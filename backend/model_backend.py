@@ -11,12 +11,12 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from contextlib import nullcontext
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 from transformers.cache_utils import StaticCache
-from contextlib import nullcontext
 
 try:
     from transformers.utils import is_flash_attn_2_available
@@ -25,9 +25,10 @@ except Exception:
     def is_flash_attn_2_available() -> bool:
         return False
 
-from backend.cache import CacheStats, PrefixCache, PrefillCache, KVPageManager
+from backend.cache import CacheStats, KVPageManager, PrefillCache, PrefixCache
+from backend.attention_patch import patch_model_with_sgl_kernel
+from backend.sgl_kernel_backend import KVPageState, SglKernelAttentionBackend, sgl_kernel_available
 from optimizations import configure_torch, inference_context, maybe_compile_model
-
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,13 @@ class ModelBackend:
         self._init_cuda_graph_state()
         self._detect_dynamic_cache()
         self._init_generation_config()
+        self._init_sgl_kernel_backend()
 
         logger.info(
-            "Model backend ready: model=%s device=%s eos_token_id=%s", model_name, device, self.eos_token_id
+            "Model backend ready: model=%s device=%s eos_token_id=%s",
+            model_name,
+            device,
+            self.eos_token_id,
         )
 
     # ------------------------------------------------------------------
@@ -254,7 +259,8 @@ class ModelBackend:
             return {"device_map": "auto"}
         if self.tensor_parallel_size > 1:
             logger.warning(
-                "Requested tensor parallelism (TENSOR_PARALLEL_SIZE=%d) but found only %d CUDA devices",
+                "Requested tensor parallelism (TENSOR_PARALLEL_SIZE=%d) but found only "
+                "%d CUDA devices",
                 self.tensor_parallel_size,
                 torch.cuda.device_count(),
             )
@@ -321,7 +327,11 @@ class ModelBackend:
         attn_impl = attn_impl.lower()
         valid = {"flash_attention_2", "sdpa", "eager", "fa3"}
         if attn_impl not in valid:
-            logger.warning("Unrecognized ATTN_IMPL=%s; expected one of %s", attn_impl, ", ".join(sorted(valid)))
+            logger.warning(
+                "Unrecognized ATTN_IMPL=%s; expected one of %s",
+                attn_impl,
+                ", ".join(sorted(valid)),
+            )
             return None
         if attn_impl == "fa3":
             # Transformers uses flash_attention_2 keyword; keep fa3 as alias.
@@ -340,7 +350,9 @@ class ModelBackend:
         cfg = getattr(self, "model", None)
         cfg_type = ""
         if cfg is not None:
-            cfg_type = str(getattr(cfg, "config", None) and getattr(cfg.config, "model_type", "")).lower()
+            cfg_type = str(
+                getattr(cfg, "config", None) and getattr(cfg.config, "model_type", "")
+            ).lower()
         return "qwen3" in name or cfg_type == "qwen3"
 
     def _maybe_optimize_qwen_attention(self) -> None:
@@ -351,7 +363,10 @@ class ModelBackend:
         if cfg is None:
             return
         if not self.device.startswith("cuda"):
-            logger.info("Qwen3 model detected but flash attention requires CUDA; device=%s", self.device)
+            logger.info(
+                "Qwen3 model detected but flash attention requires CUDA; device=%s",
+                self.device,
+            )
             return
         if self.attn_impl != "flash_attention_2":
             return
@@ -435,7 +450,9 @@ class ModelBackend:
         )
         self.page_manager: KVPageManager | None = None
         if self.page_token_budget > 0:
-            self.page_manager = KVPageManager(token_budget=self.page_token_budget, page_size=self.page_size_tokens)
+            self.page_manager = KVPageManager(
+                token_budget=self.page_token_budget, page_size=self.page_size_tokens
+            )
         self.prefix_cache = PrefixCache(
             enable=self.enable_prefix_cache,
             size=self.prefix_cache_size,
@@ -495,6 +512,55 @@ class ModelBackend:
             gen_config.pad_token_id = self.tokenizer.pad_token_id
         self.max_context_length = getattr(self.model.config, "max_position_embeddings", None)
 
+    # ------------------------------------------------------------------
+    # sgl_kernel scaffolding (backend choice + cache state)
+    # ------------------------------------------------------------------
+
+    def _init_sgl_kernel_backend(self) -> None:
+        use_sgl = self._flag_from_env("ATTN_BACKEND_SGL_KERNEL", default=False)
+        self._sgl_kernel_backend: SglKernelAttentionBackend | None = None
+        self._sgl_kernel_page_state: KVPageState | None = None
+        if not use_sgl:
+            logger.info("ATTN_BACKEND_SGL_KERNEL=0; using model-native attention")
+            return
+        if not sgl_kernel_available():
+            logger.warning(
+                "ATTN_BACKEND_SGL_KERNEL=1 but sgl_kernel unavailable or CUDA not found; falling back"
+            )
+            return
+        if not hasattr(self.model.config, "num_attention_heads"):
+            logger.warning("Model config missing num_attention_heads; cannot init sgl_kernel backend")
+            return
+        num_heads = int(self.model.config.num_attention_heads)
+        num_kv_heads = int(getattr(self.model.config, "num_key_value_heads", num_heads))
+        head_dim = int(self.model.config.hidden_size // num_heads)
+        self._sgl_kernel_backend = SglKernelAttentionBackend(
+            num_heads=num_heads, head_dim=head_dim, num_kv_heads=num_kv_heads
+        )
+        logger.info(
+            "sgl_kernel attention backend initialized | heads=%d kv_heads=%d head_dim=%d",
+            num_heads,
+            num_kv_heads,
+            head_dim,
+        )
+        wrapped = patch_model_with_sgl_kernel(self.model, self._sgl_kernel_backend)
+        logger.info("Patched %d attention modules to route through sgl_kernel backend", wrapped)
+
+    def use_sgl_kernel(self) -> bool:
+        return self._sgl_kernel_backend is not None
+
+    def sgl_kernel_prefill(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> Tuple[torch.Tensor, KVPageState]:
+        assert self._sgl_kernel_backend is not None
+        attn_out, page_state = self._sgl_kernel_backend.prefill(q, k, v, None, causal=True)
+        self._sgl_kernel_page_state = page_state
+        return attn_out, page_state
+
+    def sgl_kernel_decode(self, q: torch.Tensor) -> torch.Tensor:
+        assert self._sgl_kernel_backend is not None and self._sgl_kernel_page_state is not None
+        return self._sgl_kernel_backend.decode(q, self._sgl_kernel_page_state, causal=True)
+
     def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> tuple[int | None, Any | None]:
         return self.prefill_cache.maybe_get(prompt_ids, self.cache_stats)
 
@@ -505,7 +571,9 @@ class ModelBackend:
         """Best-effort length of the longest cached prefix without mutating caches."""
         return self.prefix_cache.match_length(prompt_ids)
 
-    def _update_prefill_cache(self, prompt_ids: List[int], first_token_id: int, kv_cache: Any) -> None:
+    def _update_prefill_cache(
+        self, prompt_ids: List[int], first_token_id: int, kv_cache: Any
+    ) -> None:
         self.prefill_cache.update(prompt_ids, first_token_id, kv_cache)
 
     def _update_prefix_cache(self, prompt_ids: List[int], kv_cache: Any) -> None:

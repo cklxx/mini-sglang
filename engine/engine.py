@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, List, Optional
+from typing import Callable, Optional
 
 from backend.model_backend import ModelBackend
 from optimizations import inference_context

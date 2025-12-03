@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from queue import SimpleQueue
-from threading import Thread, Lock
+from threading import Lock, Thread
 from typing import Generator, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -110,8 +110,8 @@ def generate(request: GenerateRequest):
         raise HTTPException(
             status_code=400,
             detail=(
-                "HTTP API is streaming-only. Use local_bench.py or server_bench.py "
-                "to compare against vanilla generate()."
+                "HTTP API is streaming-only. Use bench_suite.py to compare "
+                "against vanilla generate()."
             ),
         )
 

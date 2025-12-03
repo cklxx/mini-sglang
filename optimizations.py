@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import nullcontext
 from typing import Any
 
 import torch
-from contextlib import nullcontext
 
 logger = logging.getLogger(__name__)
 

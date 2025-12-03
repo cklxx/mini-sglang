@@ -67,9 +67,9 @@ python bench_suite.py
 Defaults: repeat=3, warmup=1, concurrency=4, mixed prompts on. Tune via env `BENCH_REPEAT`/`BENCH_WARMUP`/`BENCH_CONCURRENCY`/`BENCH_MIXED_PROMPTS` as needed.
 
 Logs at INFO level narrate every prefill/decode stream chunk so beginners can follow the full flow. Summaries include token counts and throughput for each path.
-When no flags are provided the local benchmark now uses a longer workload by default
-(`max_new_tokens=1024`, `repeat=3`) so GPU runs have enough work to outweigh startup
-overhead. Use `--max-new-tokens` and `--repeat` to shorten quick tests.
+The bench suite defaults to a longer workload (long case uses `max_new_tokens=1024`, `repeat=3`)
+so GPU runs have enough work to outweigh startup overhead. Tweak the `BENCH_*` env vars to
+shorten quick tests.
 
 Start HTTP server:
 ```bash

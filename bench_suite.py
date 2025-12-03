@@ -13,7 +13,7 @@ import random
 import statistics
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Iterable, Optional
 
 from backend.model_backend import ModelBackend
 from config import MODEL_NAME, get_device
@@ -86,8 +86,6 @@ def _summarize(samples: list[tuple[float, float, int]]) -> tuple[float, float, f
     throughput = total_tokens / total_time if total_time > 0 else 0.0
     p50_ttfb = statistics.median(ttfbs)
     p95_ttfb = statistics.quantiles(ttfbs, n=100)[94] if len(ttfbs) >= 2 else p50_ttfb
-    p50_dur = statistics.median(durs)
-    p95_dur = statistics.quantiles(durs, n=100)[94] if len(durs) >= 2 else p50_dur
     return p50_ttfb, p95_ttfb, throughput, total_tokens
 
 
@@ -106,7 +104,11 @@ def _run_suite(
         wp = Workload("warmup", prompt_tokens=8, max_new_tokens=32)
         prompt = _make_prompt(wp.prompt_tokens)
         for _ in range(warmup):
-            engine.run_generate(prompt=prompt, max_new_tokens=wp.max_new_tokens, stream_callback=lambda _: None)
+            engine.run_generate(
+                prompt=prompt,
+                max_new_tokens=wp.max_new_tokens,
+                stream_callback=lambda _: None,
+            )
 
     print("Concurrent benchmark:")
     for wl in workloads:
