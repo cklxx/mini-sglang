@@ -121,30 +121,33 @@ def _run_suite(
             else:
                 prompts.append(_make_prompt(wl.prompt_tokens))
 
-        def run_batch(use_hf: bool, workers: int) -> list[tuple[float, float, int]]:
-            samples: list[tuple[float, float, int]] = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [
-                    pool.submit(
-                        _run_once,
-                        f"{wl.name}-{i}",
-                        prompts[i % len(prompts)],
-                        wl.max_new_tokens,
-                        engine,
-                        backend,
-                        hf_runner,
-                        use_hf,
-                    )
-                    for i in range(workers * repeat)
-                ]
-                for fut in concurrent.futures.as_completed(futs):
-                    samples.append(fut.result())
-            return samples
+        mini_samples: list[tuple[float, float, int]] = []
+        for i in range(concurrency * repeat):
+            mini_samples.append(
+                _run_once(
+                    f"{wl.name}-{i}",
+                    prompts[i % len(prompts)],
+                    wl.max_new_tokens,
+                    engine,
+                    backend,
+                    hf_runner,
+                    False,
+                )
+            )
 
-        hf_workers = max(1, int(os.getenv("BENCH_HF_CONCURRENCY", "1")))
-
-        mini_samples = run_batch(False, concurrency)
-        hf_samples = run_batch(True, hf_workers)
+        hf_samples: list[tuple[float, float, int]] = []
+        for i in range(repeat):
+            hf_samples.append(
+                _run_once(
+                    f"{wl.name}-hf-{i}",
+                    prompts[i % len(prompts)],
+                    wl.max_new_tokens,
+                    engine,
+                    backend,
+                    hf_runner,
+                    True,
+                )
+            )
 
         mini_p50_ttfb, mini_p95_ttfb, mini_tp, mini_tokens = _summarize(mini_samples)
         hf_p50_ttfb, hf_p95_ttfb, hf_tp, hf_tokens = _summarize(hf_samples)
