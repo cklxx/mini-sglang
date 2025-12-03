@@ -119,35 +119,33 @@ def _run_suite(
             else:
                 prompts.append(_make_prompt(wl.prompt_tokens))
 
-        mini_samples: list[tuple[float, float, int]] = []
-        for i in range(concurrency * repeat):
-            print(f"  [mini] {wl.name} run {i + 1}/{concurrency * repeat}")
-            mini_samples.append(
-                _run_once(
-                    f"{wl.name}-{i}",
-                    prompts[i % len(prompts)],
-                    wl.max_new_tokens,
-                    engine,
-                    backend,
-                    hf_runner,
-                    False,
-                )
-            )
+        def run_batch(use_hf: bool, workers: int) -> list[tuple[float, float, int]]:
+            samples: list[tuple[float, float, int]] = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [
+                    pool.submit(
+                        _run_once,
+                        f"{wl.name}-{'hf' if use_hf else 'mini'}-{i}",
+                        prompts[i % len(prompts)],
+                        wl.max_new_tokens,
+                        engine,
+                        backend,
+                        hf_runner,
+                        use_hf,
+                    )
+                    for i in range(workers * repeat)
+                ]
+                for idx, fut in enumerate(concurrent.futures.as_completed(futs), 1):
+                    tag = "hf" if use_hf else "mini"
+                    total = workers * repeat
+                    print(f"  [{tag}] {wl.name} run {idx}/{total}")
+                    samples.append(fut.result())
+            return samples
 
-        hf_samples: list[tuple[float, float, int]] = []
-        for i in range(repeat):
-            print(f"  [hf] {wl.name} run {i + 1}/{repeat}")
-            hf_samples.append(
-                _run_once(
-                    f"{wl.name}-hf-{i}",
-                    prompts[i % len(prompts)],
-                    wl.max_new_tokens,
-                    engine,
-                    backend,
-                    hf_runner,
-                    True,
-                )
-            )
+        hf_workers = max(1, int(os.getenv("BENCH_HF_CONCURRENCY", "1")))
+
+        mini_samples = run_batch(False, concurrency)
+        hf_samples = run_batch(True, hf_workers)
 
         mini_p50_ttfb, mini_p95_ttfb, mini_tp, mini_tokens = _summarize(mini_samples)
         hf_p50_ttfb, hf_p95_ttfb, hf_tp, hf_tokens = _summarize(hf_samples)
@@ -167,9 +165,9 @@ def _run_suite(
 
 
 def main() -> None:
-    repeat = max(1, int(os.getenv("BENCH_REPEAT", "1")))
-    warmup = max(0, int(os.getenv("BENCH_WARMUP", "0")))
-    concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "1")))
+    repeat = max(1, int(os.getenv("BENCH_REPEAT", "3")))
+    warmup = max(0, int(os.getenv("BENCH_WARMUP", "1")))
+    concurrency = max(1, int(os.getenv("BENCH_CONCURRENCY", "4")))
     mixed_prompts = os.getenv("BENCH_MIXED_PROMPTS", "1") != "0"
     log_level = os.getenv("BENCH_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
