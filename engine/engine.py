@@ -16,17 +16,6 @@ from backend.model_backend import ModelBackend
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RequestState:
-    prompt_text: str
-    prompt_ids: List[int]
-    generated_ids: List[int]
-    max_new_tokens: int
-    eos_token_id: int
-    kv_cache: Any | None
-    finished: bool
-
-
 class SGLangMiniEngine:
     """Simple engine orchestrating generation using a ModelBackend."""
 
@@ -62,32 +51,26 @@ class SGLangMiniEngine:
             max_tokens,
         )
 
-        state = RequestState(
-            prompt_text=prompt,
-            prompt_ids=prompt_ids,
-            generated_ids=[],
-            max_new_tokens=max_tokens,
-            eos_token_id=self.backend.eos_token_id,
-            kv_cache=None,
-            finished=False,
-        )
+        generated_ids: list[int] = []
+        kv_cache = None
+        eos_token_id = self.backend.eos_token_id
+        finished = False
 
         first_token_id, kv_cache = self.backend.prefill_forward(prompt_ids)
-        state.generated_ids.append(first_token_id)
-        state.kv_cache = kv_cache
+        generated_ids.append(first_token_id)
         text_delta = self.backend.decode_tokens([first_token_id])
         text_chunks: list[str] = [text_delta]
         logger.info("Prefill emitted token_id=%d text=%r", first_token_id, text_delta)
         stream_callback(text_delta)
 
-        if first_token_id == state.eos_token_id or state.max_new_tokens == 1:
-            state.finished = True
+        if first_token_id == eos_token_id or max_tokens == 1:
+            finished = True
         else:
-            for step_index in range(state.max_new_tokens - 1):
-                if state.finished:
+            for step_index in range(max_tokens - 1):
+                if finished:
                     break
                 if self.backend.max_context_length is not None:
-                    used = len(state.prompt_ids) + len(state.generated_ids)
+                    used = len(prompt_ids) + len(generated_ids)
                     budget_left = self.backend.max_context_length - used - self.backend.max_context_margin
                     if budget_left <= 0:
                         logger.info(
@@ -97,21 +80,18 @@ class SGLangMiniEngine:
                             self.backend.max_context_length,
                             self.backend.max_context_margin,
                         )
-                        state.finished = True
+                        finished = True
                         break
-                last_token_id = state.generated_ids[-1]
-                next_token_id, kv_cache = self.backend.decode_forward(
-                    last_token_id, state.kv_cache
-                )
-                state.generated_ids.append(next_token_id)
-                state.kv_cache = kv_cache
-                if next_token_id == state.eos_token_id:
-                    state.finished = True
+                last_token_id = generated_ids[-1]
+                next_token_id, kv_cache = self.backend.decode_forward(last_token_id, kv_cache)
+                generated_ids.append(next_token_id)
+                if next_token_id == eos_token_id:
+                    finished = True
                 text_delta = self.backend.decode_tokens([next_token_id])
                 should_log = (
                     step_index == 0
                     or (step_index + 1) % max(1, self.decode_log_stride) == 0
-                    or state.finished
+                    or finished
                 )
                 if should_log:
                     logger.info(
@@ -119,12 +99,12 @@ class SGLangMiniEngine:
                         step_index,
                         next_token_id,
                         text_delta,
-                        state.finished,
+                        finished,
                     )
                 stream_callback(text_delta)
                 text_chunks.append(text_delta)
 
         # We already decoded per-step deltas; join them instead of re-decoding full ids.
         full_text = "".join(text_chunks)
-        logger.info("Generation complete | %d tokens emitted", len(state.generated_ids))
+        logger.info("Generation complete | %d tokens emitted", len(generated_ids))
         return full_text
