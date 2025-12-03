@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import threading
 from typing import Callable, List, Tuple
 
 import torch
@@ -33,6 +34,7 @@ class HFBaseline:
         self.model = AutoModelForCausalLM.from_pretrained(model_path)
         self.model.to(self.device)
         self.model.eval()
+        self._lock = threading.Lock()
         self.eos_token_id = (
             self.tokenizer.eos_token_id
             if self.tokenizer.eos_token_id is not None
@@ -77,23 +79,24 @@ class HFBaseline:
 
         import threading
 
-        start = time.perf_counter()
+        with self._lock:
+            start = time.perf_counter()
 
-        thread = threading.Thread(target=_generate)
-        thread.start()
+            thread = threading.Thread(target=_generate)
+            thread.start()
 
-        chunks: list[str] = []
-        for idx, token_text in enumerate(streamer, 1):
-            if stream_callback:
-                stream_callback(token_text)
-            chunks.append(token_text)
-            if idx == 1 or idx % log_stride == 0:
-                logger.info(
-                    "[hf-baseline] chunk %03d: %r (log_stride=%d)", idx, token_text, log_stride
-                )
+            chunks: list[str] = []
+            for idx, token_text in enumerate(streamer, 1):
+                if stream_callback:
+                    stream_callback(token_text)
+                chunks.append(token_text)
+                if idx == 1 or idx % log_stride == 0:
+                    logger.info(
+                        "[hf-baseline] chunk %03d: %r (log_stride=%d)", idx, token_text, log_stride
+                    )
 
-        thread.join()
-        duration = time.perf_counter() - start
+            thread.join()
+            duration = time.perf_counter() - start
 
         full_text = "".join(chunks)
         logger.info(
