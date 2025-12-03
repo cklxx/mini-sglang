@@ -396,6 +396,13 @@ class ModelBackend:
         if toggled:
             logger.info("Enabled Qwen3 flash attention flags for CUDA execution")
 
+    def _model_dtype(self) -> torch.dtype:
+        """Best-effort model dtype used for KV caches."""
+        try:
+            return next(self.model.parameters()).dtype
+        except StopIteration:
+            return torch.float32
+
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""
         base_kwargs: Dict[str, Any] = {}
@@ -747,8 +754,18 @@ class ModelBackend:
     def _maybe_init_static_cache(self, prompt_len: int) -> StaticCache | None:
         if not self.enable_static_kv:
             return None
+        model_dtype = self._model_dtype()
         if self._static_cache is not None:
-            return self._static_cache
+            cache_values = getattr(self._static_cache, "values", None)
+            cache_dtype = getattr(cache_values, "dtype", None)
+            if cache_dtype is None or cache_dtype == model_dtype:
+                return self._static_cache
+            logger.info(
+                "Reinitializing StaticCache for dtype change (cache=%s model=%s)",
+                cache_dtype,
+                model_dtype,
+            )
+            self._static_cache = None
         max_len = self.static_kv_max_len
         if max_len <= 0:
             max_len = self.max_context_length or (prompt_len + self._static_kv_budget)
@@ -757,10 +774,37 @@ class ModelBackend:
             self.enable_static_kv = False
             return None
         try:
-            self._static_cache = StaticCache(config=self.model.config, max_cache_len=max_len)
+            device = torch.device(self.device)
+            self._static_cache = StaticCache(
+                config=self.model.config, max_cache_len=max_len, device=device, dtype=model_dtype
+            )
             logger.info("Initialized StaticCache | max_cache_len=%d", max_len)
             return self._static_cache
-        except Exception as exc:
+        except TypeError:
+            # Older transformers may not accept dtype/device; best-effort fallback with validation.
+            try:
+                self._static_cache = StaticCache(
+                    config=self.model.config, max_cache_len=max_len
+                )
+                cache_values = getattr(self._static_cache, "values", None)
+                cache_dtype = getattr(cache_values, "dtype", None)
+                model_dtype = self._model_dtype()
+                if cache_dtype is not None and cache_dtype != model_dtype:
+                    logger.warning(
+                        "StaticCache dtype mismatch (cache=%s model=%s); disabling static KV",
+                        cache_dtype,
+                        model_dtype,
+                    )
+                    self.enable_static_kv = False
+                    self._static_cache = None
+                    return None
+                return self._static_cache
+            except Exception as exc:  # pragma: no cover - safety net
+                logger.warning("Failed to init StaticCache; disabling static KV (%s)", exc)
+                self.enable_static_kv = False
+                self._static_cache = None
+                return None
+        except Exception as exc:  # pragma: no cover - safety net
             logger.warning("Failed to init StaticCache; disabling static KV (%s)", exc)
             self.enable_static_kv = False
             self._static_cache = None
