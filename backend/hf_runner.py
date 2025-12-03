@@ -10,17 +10,25 @@ from typing import Callable, List, Optional, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from backend.model_backend import resolve_model_path
 from optimizations import inference_context
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_model_path(model_name: str) -> str:
+    """Local resolver to avoid coupling with mini-sglang backend."""
+    local_override = os.getenv("MODEL_LOCAL_DIR")
+    if local_override:
+        logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
+        return local_override
+    return model_name
 
 
 class HFBaseline:
     """Standalone HF generation helper (no mini-sglang caches or backends)."""
 
     def __init__(self, model_name: str, device: str) -> None:
-        model_path = resolve_model_path(model_name)
+        model_path = _resolve_model_path(model_name)
         self.device = device
         self.model_name = model_name
         torch_dtype = self._resolve_torch_dtype()
