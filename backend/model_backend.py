@@ -56,7 +56,6 @@ class ModelBackend:
         self.enable_static_kv = self._flag_from_env(
             "ENABLE_STATIC_KV", default=self.device.startswith("cuda")
         )
-        self._static_kv_disabled_for_flash = False
         self.static_kv_max_len = int(os.getenv("STATIC_KV_MAX_LEN", "0"))
         self._static_kv_budget = int(os.getenv("STATIC_KV_DEFAULT_BUDGET", "2048"))
         self.enable_cuda_graph = (
@@ -100,7 +99,6 @@ class ModelBackend:
         if self.attn_impl == "flash_attention_2" and self.enable_static_kv:
             logger.info("Disabling StaticCache when using flash attention")
             self.enable_static_kv = False
-            self._static_kv_disabled_for_flash = True
 
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
@@ -114,19 +112,6 @@ class ModelBackend:
             model_kwargs=model_kwargs,
             trust_remote_code=trust_remote_code,
         )
-        if self.attn_impl == "flash_attention_2" and not self._flash_attn_runtime_supported():
-            logger.info("flash_attention_2 not supported on this device/config; falling back to sdpa")
-            self.attn_impl = "sdpa"
-            try:
-                if hasattr(self.model, "config"):
-                    self.model.config.attn_implementation = "sdpa"  # type: ignore[attr-defined]
-            except Exception:
-                logger.debug("Failed to override model attn_implementation to sdpa", exc_info=True)
-            if self._static_kv_disabled_for_flash:
-                # Re-enable static KV when fallback to sdpa.
-                self.enable_static_kv = self._flag_from_env(
-                    "ENABLE_STATIC_KV", default=self.device.startswith("cuda")
-                )
         self._maybe_optimize_qwen_attention()
         self.model = maybe_compile_model(self.model, device=device, enabled=compile_enabled)
 
@@ -436,47 +421,6 @@ class ModelBackend:
             toggled = True
         if toggled:
             logger.info("Enabled Qwen3 flash attention flags for CUDA execution")
-
-    def _flash_attn_runtime_supported(self) -> bool:
-        """Best-effort runtime validation for flash attention."""
-        if self.device.startswith("cuda") and torch.cuda.is_available():
-            try:
-                major, minor = torch.cuda.get_device_capability()
-                if major < 8:
-                    logger.info(
-                        "flash_attention_2 requires Ampere+ (sm80); capability=%d.%d",
-                        major,
-                        minor,
-                    )
-                    return False
-            except Exception:
-                logger.debug("Unable to read CUDA capability for flash_attn check", exc_info=True)
-        else:
-            logger.info("flash_attention_2 requires CUDA; device=%s", self.device)
-            return False
-
-        # Guard against broken installs (e.g., undefined symbols)
-        try:
-            import flash_attn_2_cuda  # type: ignore  # noqa: F401
-        except Exception as exc:
-            logger.info("flash_attention_2 import failed (%s); falling back to sdpa", exc)
-            return False
-
-        cfg = getattr(self, "model", None)
-        model_cfg = getattr(cfg, "config", None)
-        if model_cfg is None:
-            return True
-        hidden_size = getattr(model_cfg, "hidden_size", None)
-        num_heads = getattr(model_cfg, "num_attention_heads", None)
-        if hidden_size and num_heads:
-            head_dim = hidden_size // num_heads
-            supported_head_sizes = {32, 64, 96, 128, 160, 192, 224, 256}
-            if head_dim not in supported_head_sizes:
-                logger.info(
-                    "flash_attention_2 head_dim=%d unsupported; falling back to sdpa", head_dim
-                )
-                return False
-        return True
 
     def _cache_dtype(self) -> torch.dtype:
         """Best-effort dtype used for KV caches (match model weights)."""
