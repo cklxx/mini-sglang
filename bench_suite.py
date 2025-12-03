@@ -123,6 +123,7 @@ def _run_suite(
 
         mini_samples: list[tuple[float, float, int]] = []
         for i in range(concurrency * repeat):
+            print(f"  [mini] {wl.name} run {i + 1}/{concurrency * repeat}")
             mini_samples.append(
                 _run_once(
                     f"{wl.name}-{i}",
@@ -137,6 +138,7 @@ def _run_suite(
 
         hf_samples: list[tuple[float, float, int]] = []
         for i in range(repeat):
+            print(f"  [hf] {wl.name} run {i + 1}/{repeat}")
             hf_samples.append(
                 _run_once(
                     f"{wl.name}-hf-{i}",
