@@ -20,12 +20,26 @@ logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import sgl_kernel.flash_attn as _sgl_flash  # type: ignore
-except Exception:
+    _sgl_import_error: Optional[Exception] = None
+except Exception as exc:
     _sgl_flash = None
+    _sgl_import_error = exc
 
 
 def sgl_kernel_available() -> bool:
     return _sgl_flash is not None and torch.cuda.is_available()
+
+
+def sgl_kernel_unavailable_reason() -> str:
+    if _sgl_flash is None:
+        return (
+            f"import error={_sgl_import_error!r}"
+            if "_sgl_import_error" in globals()
+            else "import failed"
+        )
+    if not torch.cuda.is_available():
+        return "CUDA not available"
+    return "unknown"
 
 
 @dataclass

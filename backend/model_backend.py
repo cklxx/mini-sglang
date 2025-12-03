@@ -621,7 +621,13 @@ class ModelBackend:
         self._sgl_kernel_backend: SglKernelAttentionBackend | None = None
         self._sgl_kernel_page_state: KVPageState | None = None
         if not use_sgl:
-            logger.info("ATTN_BACKEND_SGL_KERNEL=0; using model-native attention")
+            if self.use_sgl_kernel_requested:
+                logger.info(
+                    "ATTN_BACKEND_SGL_KERNEL=1 but sgl_kernel unavailable; using model-native attention (%s)",
+                    sgl_kernel_unavailable_reason(),
+                )
+            else:
+                logger.info("ATTN_BACKEND_SGL_KERNEL=0; using model-native attention")
             return
         if not sgl_kernel_available():
             logger.warning(
