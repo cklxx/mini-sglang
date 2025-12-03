@@ -26,6 +26,7 @@ class Workload:
     name: str
     prompt_tokens: int
     max_new_tokens: int
+    turns: int = 1
 
 
 def _make_prompt(token_count: int) -> str:
@@ -35,8 +36,15 @@ def _make_prompt(token_count: int) -> str:
 
 def _default_workloads() -> list[Workload]:
     return [
-        Workload("long", prompt_tokens=256, max_new_tokens=1024),
+        Workload("multi_turn", prompt_tokens=96, max_new_tokens=128, turns=4),
+        Workload("long", prompt_tokens=256, max_new_tokens=1024, turns=1),
     ]
+
+
+def _build_chat_prompt(history: list[tuple[str, str]], user_turn: str) -> str:
+    segments = [f"User: {u}\nAssistant: {a}" for u, a in history]
+    segments.append(f"User: {user_turn}\nAssistant:")
+    return "\n".join(segments)
 
 
 def _run_once(
@@ -47,26 +55,35 @@ def _run_once(
     backend: ModelBackend,
     hf_runner: HFBaseline,
     use_hf: bool,
+    turns: int = 1,
 ) -> tuple[float, float, int]:
     start = time.perf_counter()
     first: Optional[float] = None
-    tokens: Optional[int] = None
+    tokens: int = 0
+    history: list[tuple[str, str]] = []
 
     def cb(delta: str) -> None:
         nonlocal first
         if delta and first is None:
             first = time.perf_counter()
 
-    if use_hf:
-        text, _ = hf_runner.generate_streaming(
-            prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=cb
+    for turn in range(turns):
+        user_turn = f"{prompt} #{turn}" if turn > 0 else prompt
+        turn_prompt = (
+            _build_chat_prompt(history, user_turn) if turns > 1 else user_turn
         )
-        tokens = len(hf_runner.tokenize(text))
-    else:
-        text = engine.run_generate(
-            prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=cb
-        )
-        tokens = len(backend.tokenize(text))
+        if use_hf:
+            text, _ = hf_runner.generate_streaming(
+                prompt=turn_prompt, max_new_tokens=max_new_tokens, stream_callback=cb
+            )
+            tokens += len(hf_runner.tokenize(text))
+        else:
+            text = engine.run_generate(
+                prompt=turn_prompt, max_new_tokens=max_new_tokens, stream_callback=cb
+            )
+            tokens += len(backend.tokenize(text))
+        if turns > 1:
+            history.append((user_turn, text))
 
     end = time.perf_counter()
     ttfb = (first - start) if first is not None else (end - start)
@@ -133,6 +150,7 @@ def _run_suite(
                         backend,
                         hf_runner,
                         use_hf,
+                        wl.turns,
                     )
                 )
             return samples
@@ -147,7 +165,7 @@ def _run_suite(
 
         print(
             f"- {wl.name}: prompt_tokens={wl.prompt_tokens} max_new_tokens={wl.max_new_tokens} "
-            f"repeat={repeat} concurrency={concurrency} mixed_prompts={mixed_prompts}"
+            f"turns={wl.turns} repeat={repeat} concurrency={concurrency} mixed_prompts={mixed_prompts}"
         )
         print(
             f"  mini-sglang: tokens={mini_tokens} p50_ttfb={mini_p50_ttfb:.3f}s "
