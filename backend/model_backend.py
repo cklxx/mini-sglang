@@ -70,10 +70,8 @@ class ModelBackend:
         model_kwargs = self._tensor_parallel_kwargs(use_tensor_parallel)
         torch_dtype = self._resolve_torch_dtype()
         self.attn_impl = self._resolve_attn_impl()
-        sgl_available = sgl_kernel_available() and self.device.startswith("cuda")
-        sgl_default = os.getenv("ATTN_BACKEND_SGL_KERNEL") is None and sgl_available
         self.use_sgl_kernel_requested = self._flag_from_env(
-            "ATTN_BACKEND_SGL_KERNEL", default=sgl_default
+            "ATTN_BACKEND_SGL_KERNEL", default=self.device.startswith("cuda")
         )
         if self.use_sgl_kernel_requested and self.attn_impl == "flash_attention_2":
             logger.info("Using sgl_kernel backend; forcing attn_implementation=eager")
