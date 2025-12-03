@@ -6,7 +6,7 @@ flash-attn; platform_system == "Linux"
 sentencepiece
 httpx
 pybase64
-sglang==0.5.2
+sglang==0.5.5
 modelscope
 orjson
 uvloop; sys_platform != "win32"
