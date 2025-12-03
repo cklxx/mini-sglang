@@ -397,20 +397,12 @@ class ModelBackend:
             logger.info("Enabled Qwen3 flash attention flags for CUDA execution")
 
     def _cache_dtype(self) -> torch.dtype:
-        """Best-effort dtype used by inference (aligns StaticCache with autocast)."""
-        if self.device.startswith("cuda"):
-            try:
-                return torch.get_autocast_gpu_dtype()
-            except Exception:
-                return torch.float16
-        if self.device == "mps":
-            try:
-                return torch.get_autocast_mps_dtype()
-            except Exception:
-                return torch.float16
+        """Best-effort dtype used for KV caches (match model weights)."""
         try:
             return next(self.model.parameters()).dtype
         except StopIteration:
+            if self.device.startswith("cuda") or self.device == "mps":
+                return torch.float16
             return torch.float32
 
     def _cache_values_dtype(self, cache: StaticCache | None) -> torch.dtype | None:
