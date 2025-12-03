@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run lint/type checks before commit.
+set -euo pipefail
+
+ruff check .
+mypy --ignore-missing-imports --install-types --non-interactive .
