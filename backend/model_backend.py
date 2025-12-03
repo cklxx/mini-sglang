@@ -338,7 +338,12 @@ class ModelBackend:
         """Optional attention implementation override."""
         attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
         if attn_impl is None:
-            # Default to flash attention when on CUDA if not specified.
+            # Default to sdpa for Qwen3 to avoid flash-attn instability unless forced.
+            if self._is_qwen3():
+                logger.info(
+                    "Defaulting to sdpa for Qwen3; set ATTN_IMPL=flash_attention_2 to force flash"
+                )
+                return "sdpa"
             if self.device.startswith("cuda") and os.getenv("ENABLE_FLASH_ATTENTION", "1") != "0":
                 attn_impl = "flash_attention_2"
             else:
