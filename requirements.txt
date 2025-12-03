@@ -2,6 +2,7 @@ fastapi
 uvicorn
 transformers
 torch
+flash-attn; platform_system == "Linux"
 sentencepiece
 httpx
 pybase64

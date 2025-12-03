@@ -69,9 +69,25 @@ class ModelBackend:
         use_tensor_parallel = self._can_use_tensor_parallel()
         model_kwargs = self._tensor_parallel_kwargs(use_tensor_parallel)
         torch_dtype = self._resolve_torch_dtype()
+        self.attn_impl = self._resolve_attn_impl()
+
+        if (
+            torch_dtype is None
+            and self.attn_impl == "flash_attention_2"
+            and self.device.startswith("cuda")
+        ):
+            torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            logger.info(
+                "Defaulting torch_dtype=%s for flash attention on CUDA", torch_dtype
+            )
+        if torch_dtype == torch.float32 and self.attn_impl == "flash_attention_2":
+            logger.warning(
+                "Flash attention requires float16/bfloat16; falling back to sdpa for torch_dtype=float32"
+            )
+            self.attn_impl = "sdpa"
+
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
-        self.attn_impl = self._resolve_attn_impl()
         if self.attn_impl is not None:
             model_kwargs["attn_implementation"] = self.attn_impl
         trust_remote_code = self._flag_from_env("TRUST_REMOTE_CODE", default=False)
