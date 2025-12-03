@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from backend.model_backend import ModelBackend
+from backend.hf_runner import HFBaseline
 from config import MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 
@@ -46,6 +47,7 @@ def _run_once(
     max_new_tokens: int,
     engine: SGLangMiniEngine,
     backend: ModelBackend,
+    hf_runner: HFBaseline,
     use_hf: bool,
 ) -> tuple[float, float, int]:
     start = time.perf_counter()
@@ -58,11 +60,10 @@ def _run_once(
             first = time.perf_counter()
 
     if use_hf:
-        prompt_ids = backend.tokenize(prompt)
-        text, _ = backend.generate_streaming_baseline(
-            prompt_ids=prompt_ids, max_new_tokens=max_new_tokens, stream_callback=cb
+        text, _ = hf_runner.generate_streaming(
+            prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=cb
         )
-        tokens = len(backend.tokenize(text))
+        tokens = len(hf_runner.tokenize(text))
     else:
         text = engine.run_generate(
             prompt=prompt, max_new_tokens=max_new_tokens, stream_callback=cb
@@ -93,6 +94,7 @@ def _run_suite(
     *,
     backend: ModelBackend,
     engine: SGLangMiniEngine,
+    hf_runner: HFBaseline,
     workloads: Iterable[Workload],
     repeat: int,
     warmup: int,
@@ -130,6 +132,7 @@ def _run_suite(
                         wl.max_new_tokens,
                         engine,
                         backend,
+                        hf_runner,
                         use_hf,
                     )
                     for i in range(concurrency * repeat)
@@ -170,6 +173,7 @@ def main() -> None:
     )
 
     backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
+    hf_runner = HFBaseline(model_name=MODEL_NAME, device=get_device())
     engine = SGLangMiniEngine(
         backend=backend, max_new_tokens_default=max(w.max_new_tokens for w in _default_workloads())
     )
@@ -177,6 +181,7 @@ def main() -> None:
     _run_suite(
         backend=backend,
         engine=engine,
+        hf_runner=hf_runner,
         workloads=_default_workloads(),
         repeat=repeat,
         warmup=warmup,
