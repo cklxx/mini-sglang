@@ -118,11 +118,11 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen3-0.6B-Instruct`). If you previously pulled an older Qwen checkpoint, remove the cached folder so the new default can be re-downloaded cleanly. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `rd211/Qwen3-0.6B-Instruct`). If you previously pulled another Qwen checkpoint, remove the cached folder so the new default can be re-downloaded cleanly. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 
-Default benchmark suite (longer decode: max_new_tokens=1024, repeat=3 runs) on `Qwen/Qwen3-0.6B-Instruct`:
+Default benchmark suite (longer decode: max_new_tokens=1024, repeat=3 runs) on `rd211/Qwen3-0.6B-Instruct`:
 
 ```
 Streaming chat summary: throughput=37.16 tok/s, duration=10.387s
