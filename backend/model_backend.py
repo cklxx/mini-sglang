@@ -530,6 +530,17 @@ class ModelBackend:
         self.prefix_cache_policy = (os.getenv("PREFIX_CACHE_POLICY", "lru") or "lru").lower()
         self.page_token_budget = int(os.getenv("PAGE_TOKEN_BUDGET", "0"))
         self.page_size_tokens = int(os.getenv("PAGE_SIZE_TOKENS", "512"))
+
+        if self.attn_impl == "flash_attention_2":
+            logger.info("Disabling prefill/prefix caches for flash attention")
+            self.prefill_cache_size = 0
+            self.prefill_cache_token_budget = 0
+            self.enable_prefix_cache = False
+            self.prefix_cache_size = 0
+            self.prefix_cache_max_tokens = 0
+            self.prefix_cache_token_budget = 0
+            self.page_token_budget = 0
+
         self.token_cache: OrderedDict[str, List[int]] = OrderedDict()
         self.cache_stats = CacheStats()
         self.prefill_cache = PrefillCache(
