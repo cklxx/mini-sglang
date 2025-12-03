@@ -413,6 +413,23 @@ class ModelBackend:
         except StopIteration:
             return torch.float32
 
+    def _cache_values_dtype(self, cache: StaticCache | None) -> torch.dtype | None:
+        """Inspect a cache object to infer the stored dtype."""
+        if cache is None:
+            return None
+        values = getattr(cache, "values", None)
+        return self._first_tensor_dtype(values)
+
+    def _first_tensor_dtype(self, obj: Any) -> torch.dtype | None:
+        """Return dtype of the first tensor inside nested lists/tuples."""
+        if obj is None:
+            return None
+        if torch.is_tensor(obj):
+            return obj.dtype
+        if isinstance(obj, (list, tuple)) and len(obj) > 0:
+            return self._first_tensor_dtype(obj[0])
+        return None
+
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""
         base_kwargs: Dict[str, Any] = {}
@@ -766,9 +783,13 @@ class ModelBackend:
             return None
         cache_dtype = self._cache_dtype()
         if self._static_cache is not None:
-            cache_values = getattr(self._static_cache, "values", None)
-            cached_dtype = getattr(cache_values, "dtype", None)
-            if cached_dtype is None or cached_dtype == cache_dtype:
+            cached_dtype = self._cache_values_dtype(self._static_cache)
+            if cached_dtype is None:
+                logger.warning("StaticCache dtype unknown; disabling static KV to avoid mismatch")
+                self.enable_static_kv = False
+                self._static_cache = None
+                return None
+            if cached_dtype == cache_dtype:
                 return self._static_cache
             logger.info(
                 "Reinitializing StaticCache for dtype change (cache=%s expected=%s)",
@@ -788,6 +809,23 @@ class ModelBackend:
             self._static_cache = StaticCache(
                 config=self.model.config, max_cache_len=max_len, device=device, dtype=cache_dtype
             )
+            created_dtype = self._cache_values_dtype(self._static_cache)
+            if created_dtype is None:
+                logger.warning(
+                    "StaticCache dtype unknown after init; disabling static KV to avoid mismatch"
+                )
+                self.enable_static_kv = False
+                self._static_cache = None
+                return None
+            if created_dtype != cache_dtype:
+                logger.warning(
+                    "StaticCache dtype mismatch after init (cache=%s expected=%s); disabling static KV",
+                    created_dtype,
+                    cache_dtype,
+                )
+                self.enable_static_kv = False
+                self._static_cache = None
+                return None
             logger.info("Initialized StaticCache | max_cache_len=%d", max_len)
             return self._static_cache
         except TypeError:
@@ -796,8 +834,14 @@ class ModelBackend:
                 self._static_cache = StaticCache(
                     config=self.model.config, max_cache_len=max_len
                 )
-                cache_values = getattr(self._static_cache, "values", None)
-                cached_dtype = getattr(cache_values, "dtype", None)
+                cached_dtype = self._cache_values_dtype(self._static_cache)
+                if cached_dtype is None:
+                    logger.warning(
+                        "StaticCache dtype unknown after fallback init; disabling static KV"
+                    )
+                    self.enable_static_kv = False
+                    self._static_cache = None
+                    return None
                 if cached_dtype is not None and cached_dtype != cache_dtype:
                     logger.warning(
                         "StaticCache dtype mismatch (cache=%s expected=%s); disabling static KV",
