@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -31,16 +31,8 @@ class HFBaseline:
         model_path = _resolve_model_path(model_name)
         self.device = device
         self.model_name = model_name
-        torch_dtype = self._resolve_torch_dtype()
-        model_kwargs = {}
-        if torch_dtype is not None:
-            model_kwargs["torch_dtype"] = torch_dtype
-        attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
-        if attn_impl:
-            model_kwargs["attn_implementation"] = attn_impl
-
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path)
         self.model.to(self.device)
         self.model.eval()
         self.eos_token_id = (
@@ -50,35 +42,6 @@ class HFBaseline:
         )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.eos_token_id or 0
-
-    def _resolve_torch_dtype(self) -> Optional[torch.dtype]:
-        """Optional dtype override for model weights."""
-        dtype_str = os.getenv("MODEL_DTYPE") or os.getenv("TORCH_DTYPE")
-        if dtype_str is None:
-            return None
-        key = dtype_str.lower()
-        mapping = {
-            "float16": torch.float16,
-            "fp16": torch.float16,
-            "half": torch.float16,
-            "bfloat16": torch.bfloat16,
-            "bf16": torch.bfloat16,
-            "float32": torch.float32,
-            "fp32": torch.float32,
-            "auto": None,
-        }
-        if key not in mapping:
-            logger.warning("HFBaseline: unrecognized MODEL_DTYPE=%s; ignoring", dtype_str)
-            return None
-        dtype = mapping[key]
-        if dtype is None:
-            if self.device.startswith("cuda") or self.device == "mps":
-                dtype = torch.float16
-            else:
-                dtype = None
-        if dtype is not None:
-            logger.info("HFBaseline: using torch_dtype=%s", dtype)
-        return dtype
 
     def tokenize(self, prompt: str) -> List[int]:
         return self.tokenizer.encode(prompt, add_special_tokens=False)
