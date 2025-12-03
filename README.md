@@ -71,6 +71,9 @@ python local_bench.py --max-new-tokens 64 "Benchmarking mini-sglang"
 The benchmark prints token counts, wall-clock duration, and throughput for all three so you can evaluate orchestration overhead.
 
 Logs at INFO level narrate every prefill/decode stream chunk so beginners can follow the full flow. Summaries include token counts and throughput for each path.
+When no flags are provided the local benchmark now uses a longer workload by default
+(`max_new_tokens=1024`, `repeat=3`) so GPU runs have enough work to outweigh startup
+overhead. Use `--max-new-tokens` and `--repeat` to shorten quick tests.
 
 Start HTTP server:
 ```bash
@@ -115,11 +118,11 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 
 Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
 
-Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen3-0.6B-Instruct`). Qwen3 is a gated repo: export a token via `HF_TOKEN`/`HUGGINGFACE_HUB_TOKEN` (or override `MODEL_NAME` to an open model) to avoid 401s. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
+Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `Qwen/Qwen3-0.6B-Instruct`). If you previously pulled an older Qwen checkpoint, remove the cached folder so the new default can be re-downloaded cleanly. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
 
 ### Example benchmark result (Apple M1 Pro, 32GB RAM, Python 3.12.8, MPS)
 
-Default benchmark suite (3 chat turns, max_new_tokens=512 when no prompt is given) on `Qwen/Qwen3-0.6B-Instruct`:
+Default benchmark suite (longer decode: max_new_tokens=1024, repeat=3 runs) on `Qwen/Qwen3-0.6B-Instruct`:
 
 ```
 Streaming chat summary: throughput=37.16 tok/s, duration=10.387s
