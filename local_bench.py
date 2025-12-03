@@ -14,6 +14,10 @@ from backend.model_backend import ModelBackend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 
+# Default to a longer local benchmark (more tokens + repeated runs) so GPU
+# paths have enough work to shine by default.
+LOCAL_BENCH_MAX_NEW_TOKENS = max(1024, MAX_NEW_TOKENS_DEFAULT)
+LOCAL_BENCH_REPEAT = 3
 
 @sgl.function
 def _sglang_single_turn(s, prompt: str):
@@ -21,11 +25,7 @@ def _sglang_single_turn(s, prompt: str):
     s += sgl.assistant(sgl.gen("answer"))
 
 
-def run_sglang_runtime(
-    *, prompt: str, max_new_tokens: int, model_name: str
-) -> Tuple[str, float, int]:
-    """Stream tokens through a real sglang Runtime launched in-process."""
-
+def _init_sglang_runtime(model_name: str):
     runtime = sgl.Runtime(
         model_path=model_name,
         tokenizer_path=model_name,
@@ -34,7 +34,20 @@ def run_sglang_runtime(
     )
     # Some sglang builds leave pid unset; guard __del__/shutdown from exploding.
     runtime.pid = getattr(runtime, "pid", None)
+    return runtime
 
+
+def run_sglang_runtime(
+    *,
+    prompt: str,
+    max_new_tokens: int,
+    model_name: str,
+    runtime: Any | None = None,
+) -> Tuple[str, float, int]:
+    """Stream tokens through a real sglang Runtime launched in-process."""
+
+    owns_runtime = runtime is None
+    runtime = runtime or _init_sglang_runtime(model_name)
     tokenizer = runtime.get_tokenizer()
     start = time.perf_counter()
     sgl_fn = cast(Any, _sglang_single_turn)
@@ -51,7 +64,8 @@ def run_sglang_runtime(
     duration = time.perf_counter() - start
     text = "".join(chunks)
     tokens = len(tokenizer.encode(text)) if duration > 0 else 0
-    runtime.shutdown()
+    if owns_runtime:
+        runtime.shutdown()
     return text, duration, tokens
 
 
@@ -91,6 +105,18 @@ def _missing_sglang_runtime_deps() -> list[str]:
     return [mod for mod in required if importlib.util.find_spec(mod) is None]
 
 
+def _summarize_runs(
+    runs: list[Tuple[str, float, int]]
+) -> Tuple[str, float, float, float, int]:
+    if not runs:
+        return "", 0.0, 0.0, 0.0, 0
+    total_tokens = sum(tokens for _, _, tokens in runs)
+    total_duration = sum(duration for _, duration, _ in runs)
+    avg_duration = total_duration / len(runs)
+    throughput = total_tokens / total_duration if total_duration > 0 else 0.0
+    return runs[0][0], total_duration, avg_duration, throughput, total_tokens
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -108,13 +134,22 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         dest="max_new_tokens",
-        help="Override generation budget (defaults to project setting)",
+        help=(
+            "Override generation budget "
+            f"(defaults to a longer local bench: {LOCAL_BENCH_MAX_NEW_TOKENS})"
+        ),
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
         help="Model name for all three paths (defaults to MODEL_NAME)",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=LOCAL_BENCH_REPEAT,
+        help="Number of timed runs per backend for a longer, steadier benchmark",
     )
     parser.add_argument(
         "--log-level",
@@ -133,7 +168,8 @@ def main() -> None:
     )
 
     model_name = args.model or MODEL_NAME
-    token_budget = args.max_new_tokens or MAX_NEW_TOKENS_DEFAULT
+    token_budget = args.max_new_tokens or LOCAL_BENCH_MAX_NEW_TOKENS
+    repeat = max(1, args.repeat)
 
     backend = ModelBackend(model_name=model_name, device=get_device())
     engine = SGLangMiniEngine(
@@ -141,13 +177,15 @@ def main() -> None:
     )
 
     print(
-        f"Benchmarking prompt={args.prompt!r} | model={model_name} | max_new_tokens={token_budget}"
+        f"Benchmarking prompt={args.prompt!r} | model={model_name} | "
+        f"max_new_tokens={token_budget} | repeat={repeat}"
     )
 
     skip_sg = os.getenv("SKIP_SGLANG_RUNTIME", "0") == "1"
     sg_error: str | None = "Skipped via SKIP_SGLANG_RUNTIME" if skip_sg else None
-    sg_result: Tuple[str, float, int] | None = None
+    sg_runs: list[Tuple[str, float, int]] = []
     sg_text = ""
+    runtime = None
     if not skip_sg:
         missing = _missing_sglang_runtime_deps()
         if missing:
@@ -157,42 +195,70 @@ def main() -> None:
             )
         else:
             try:
-                sg_result = run_sglang_runtime(
-                    prompt=args.prompt, max_new_tokens=token_budget, model_name=model_name
-                )
+                runtime = _init_sglang_runtime(model_name)
+                try:
+                    sg_runs = [
+                        run_sglang_runtime(
+                            prompt=args.prompt,
+                            max_new_tokens=token_budget,
+                            model_name=model_name,
+                            runtime=runtime,
+                        )
+                        for _ in range(repeat)
+                    ]
+                finally:
+                    runtime.shutdown()
             except Exception as exc:  # pragma: no cover - best-effort guard
                 sg_error = f"sglang Runtime failed: {exc}"
 
-    mini_text, mini_duration, mini_tokens = run_mini_sglang(
-        engine=engine,
-        prompt=args.prompt,
-        max_new_tokens=token_budget,
-        backend=backend,
+    mini_runs = [
+        run_mini_sglang(
+            engine=engine,
+            prompt=args.prompt,
+            max_new_tokens=token_budget,
+            backend=backend,
+        )
+        for _ in range(repeat)
+    ]
+    hf_runs = [
+        run_hf_streaming(
+            backend=backend, prompt=args.prompt, max_new_tokens=token_budget
+        )
+        for _ in range(repeat)
+    ]
+
+    sg_text, sg_duration, sg_avg_duration, sg_throughput, sg_tokens = _summarize_runs(
+        sg_runs
     )
-    hf_text, hf_duration, hf_tokens = run_hf_streaming(
-        backend=backend, prompt=args.prompt, max_new_tokens=token_budget
+    mini_text, mini_duration, mini_avg_duration, mini_throughput, mini_tokens = (
+        _summarize_runs(mini_runs)
+    )
+    hf_text, hf_duration, hf_avg_duration, hf_throughput, hf_tokens = _summarize_runs(
+        hf_runs
     )
 
     print("\nLocal results:")
-    if sg_result is not None:
-        sg_text, sg_duration, sg_tokens = sg_result
+    if sg_runs:
         print(
-            f"- sglang Runtime: tokens={sg_tokens} duration={sg_duration:.3f}s "
-            f"throughput={sg_tokens/sg_duration if sg_duration>0 else 0:.2f} tok/s"
+            f"- sglang Runtime: runs={len(sg_runs)} tokens={sg_tokens} "
+            f"duration={sg_duration:.3f}s avg/run={sg_avg_duration:.3f}s "
+            f"throughput={sg_throughput:.2f} tok/s"
         )
     else:
         print(f"- sglang Runtime: skipped ({sg_error})")
     print(
-        f"- mini-sglang:    tokens={mini_tokens} duration={mini_duration:.3f}s "
-        f"throughput={mini_tokens/mini_duration if mini_duration>0 else 0:.2f} tok/s"
+        f"- mini-sglang:    runs={len(mini_runs)} tokens={mini_tokens} "
+        f"duration={mini_duration:.3f}s avg/run={mini_avg_duration:.3f}s "
+        f"throughput={mini_throughput:.2f} tok/s"
     )
     print(
-        f"- HF streaming:   tokens={hf_tokens} duration={hf_duration:.3f}s "
-        f"throughput={hf_tokens/hf_duration if hf_duration>0 else 0:.2f} tok/s"
+        f"- HF streaming:   runs={len(hf_runs)} tokens={hf_tokens} "
+        f"duration={hf_duration:.3f}s avg/run={hf_avg_duration:.3f}s "
+        f"throughput={hf_throughput:.2f} tok/s"
     )
 
     print("\nPreviews:")
-    if sg_result is not None:
+    if sg_runs:
         print(f"- sglang:   {sg_text[:120]!r}")
     else:
         print(f"- sglang:   [skipped]")
