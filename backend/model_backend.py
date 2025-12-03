@@ -396,8 +396,18 @@ class ModelBackend:
         if toggled:
             logger.info("Enabled Qwen3 flash attention flags for CUDA execution")
 
-    def _model_dtype(self) -> torch.dtype:
-        """Best-effort model dtype used for KV caches."""
+    def _cache_dtype(self) -> torch.dtype:
+        """Best-effort dtype used by inference (aligns StaticCache with autocast)."""
+        if self.device.startswith("cuda"):
+            try:
+                return torch.get_autocast_gpu_dtype()
+            except Exception:
+                return torch.float16
+        if self.device == "mps":
+            try:
+                return torch.get_autocast_mps_dtype()
+            except Exception:
+                return torch.float16
         try:
             return next(self.model.parameters()).dtype
         except StopIteration:
@@ -754,16 +764,16 @@ class ModelBackend:
     def _maybe_init_static_cache(self, prompt_len: int) -> StaticCache | None:
         if not self.enable_static_kv:
             return None
-        model_dtype = self._model_dtype()
+        cache_dtype = self._cache_dtype()
         if self._static_cache is not None:
             cache_values = getattr(self._static_cache, "values", None)
-            cache_dtype = getattr(cache_values, "dtype", None)
-            if cache_dtype is None or cache_dtype == model_dtype:
+            cached_dtype = getattr(cache_values, "dtype", None)
+            if cached_dtype is None or cached_dtype == cache_dtype:
                 return self._static_cache
             logger.info(
-                "Reinitializing StaticCache for dtype change (cache=%s model=%s)",
+                "Reinitializing StaticCache for dtype change (cache=%s expected=%s)",
+                cached_dtype,
                 cache_dtype,
-                model_dtype,
             )
             self._static_cache = None
         max_len = self.static_kv_max_len
@@ -776,7 +786,7 @@ class ModelBackend:
         try:
             device = torch.device(self.device)
             self._static_cache = StaticCache(
-                config=self.model.config, max_cache_len=max_len, device=device, dtype=model_dtype
+                config=self.model.config, max_cache_len=max_len, device=device, dtype=cache_dtype
             )
             logger.info("Initialized StaticCache | max_cache_len=%d", max_len)
             return self._static_cache
@@ -787,13 +797,12 @@ class ModelBackend:
                     config=self.model.config, max_cache_len=max_len
                 )
                 cache_values = getattr(self._static_cache, "values", None)
-                cache_dtype = getattr(cache_values, "dtype", None)
-                model_dtype = self._model_dtype()
-                if cache_dtype is not None and cache_dtype != model_dtype:
+                cached_dtype = getattr(cache_values, "dtype", None)
+                if cached_dtype is not None and cached_dtype != cache_dtype:
                     logger.warning(
-                        "StaticCache dtype mismatch (cache=%s model=%s); disabling static KV",
+                        "StaticCache dtype mismatch (cache=%s expected=%s); disabling static KV",
+                        cached_dtype,
                         cache_dtype,
-                        model_dtype,
                     )
                     self.enable_static_kv = False
                     self._static_cache = None
