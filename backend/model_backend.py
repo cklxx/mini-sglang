@@ -49,6 +49,7 @@ class ModelBackend:
         model_path = resolve_model_path(model_name)
 
         self.device = device
+        self.model_name = model_name
         compile_enabled = self._flag_from_env("COMPILE_MODEL", default=compile_model)
         self.tensor_parallel_size = self._resolve_tensor_parallel_size()
         use_tensor_parallel = self._can_use_tensor_parallel()
@@ -56,9 +57,9 @@ class ModelBackend:
         torch_dtype = self._resolve_torch_dtype()
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
-        attn_impl = self._resolve_attn_impl()
-        if attn_impl is not None:
-            model_kwargs["attn_implementation"] = attn_impl
+        self.attn_impl = self._resolve_attn_impl()
+        if self.attn_impl is not None:
+            model_kwargs["attn_implementation"] = self.attn_impl
         trust_remote_code = self._flag_from_env("TRUST_REMOTE_CODE", default=False)
 
         self.tokenizer = self._load_tokenizer(model_path, trust_remote_code=trust_remote_code)
@@ -67,6 +68,7 @@ class ModelBackend:
             model_kwargs=model_kwargs,
             trust_remote_code=trust_remote_code,
         )
+        self._maybe_optimize_qwen_attention()
         self.model = maybe_compile_model(self.model, device=device, enabled=compile_enabled)
 
         if use_tensor_parallel:
@@ -295,6 +297,40 @@ class ModelBackend:
             return "sdpa"
         logger.info("Using attn_implementation=%s", attn_impl)
         return attn_impl
+
+    def _is_qwen_family(self) -> bool:
+        """Detect Qwen2.x/3.x models by name or config."""
+        name = self.model_name.lower()
+        cfg = getattr(self, "model", None)
+        cfg_type = ""
+        if cfg is not None:
+            cfg_type = str(getattr(cfg, "config", None) and getattr(cfg.config, "model_type", "")).lower()
+        return any(
+            key in name or cfg_type == key
+            for key in ("qwen2.5", "qwen2", "qwen3")
+        )
+
+    def _maybe_optimize_qwen_attention(self) -> None:
+        """Enable flash attention flags for Qwen2.x when possible."""
+        if self.model is None or not self._is_qwen_family():
+            return
+        cfg = getattr(self.model, "config", None)
+        if cfg is None:
+            return
+        if not self.device.startswith("cuda"):
+            logger.info("Qwen2 model detected but flash attention requires CUDA; device=%s", self.device)
+            return
+        if self.attn_impl != "flash_attention_2":
+            return
+        toggled = False
+        if hasattr(cfg, "use_flash_attn") and cfg.use_flash_attn is False:
+            cfg.use_flash_attn = True
+            toggled = True
+        if hasattr(cfg, "flash_attn") and getattr(cfg, "flash_attn") is False:
+            cfg.flash_attn = True
+            toggled = True
+        if toggled:
+            logger.info("Enabled Qwen2 flash attention flags for CUDA execution")
 
     def _load_tokenizer(self, model_path: str, trust_remote_code: bool = False):
         """Load tokenizer with a fallback to trust_remote_code for newer models."""

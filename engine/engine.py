@@ -3,6 +3,7 @@
 This is the mini analogue of sglang's engine: it orchestrates per-request
 state, prefill + decode loops, and streaming callbacks on top of the backend.
 """
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
 from backend.model_backend import ModelBackend
-
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,7 @@ class SGLangMiniEngine:
     ) -> None:
         self.backend = backend
         self.max_new_tokens_default = max_new_tokens_default
-        self.decode_log_stride = decode_log_stride or int(
-            os.getenv("DECODE_LOG_STRIDE", "256")
-        )
+        self.decode_log_stride = decode_log_stride or int(os.getenv("DECODE_LOG_STRIDE", "256"))
 
     def run_generate(
         self,
@@ -71,7 +69,9 @@ class SGLangMiniEngine:
                     break
                 if self.backend.max_context_length is not None:
                     used = len(prompt_ids) + len(generated_ids)
-                    budget_left = self.backend.max_context_length - used - self.backend.max_context_margin
+                    budget_left = (
+                        self.backend.max_context_length - used - self.backend.max_context_margin
+                    )
                     if budget_left <= 0:
                         logger.info(
                             "Stopping decode to avoid context overflow "
