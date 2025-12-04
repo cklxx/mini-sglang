@@ -43,9 +43,11 @@ class SGLangMiniEngine:
 
         # Normalize prompt/token budget up front for consistent logging and limits.
         fast_stream_decode = os.getenv("FAST_STREAM_DECODE", "1") != "0"
-        prompt_ids = prompt_ids if prompt_ids is not None else self.backend.tokenize(prompt)
+        prompt_tokens: list[int] = (
+            prompt_ids if prompt_ids is not None else self.backend.tokenize(prompt)
+        )
         requested_tokens = max_new_tokens or self.max_new_tokens_default
-        max_tokens = self.backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
+        max_tokens = self.backend.cap_max_new_tokens(len(prompt_tokens), requested_tokens)
         if max_tokens is None:
             max_tokens = requested_tokens
 
@@ -58,7 +60,7 @@ class SGLangMiniEngine:
 
         logger.info(
             "Starting generation run | prompt_tokens=%d max_new_tokens=%d",
-            len(prompt_ids),
+            len(prompt_tokens),
             max_tokens,
         )
 
@@ -76,7 +78,7 @@ class SGLangMiniEngine:
             # Prefill once to seed KV cache and stream the first token.
             timer.mark("prefill_start")
             first_token_id, kv_cache = self.backend.prefill_forward(
-                prompt_ids, use_context=False
+                prompt_tokens, use_context=False
             )
             if self.backend.device.startswith("cuda"):
                 torch.cuda.synchronize()
@@ -97,7 +99,7 @@ class SGLangMiniEngine:
                     if finished:
                         break
                     if max_context_length is not None:
-                        used = len(prompt_ids) + len(generated_ids)
+                        used = len(prompt_tokens) + len(generated_ids)
                         budget_left = max_context_length - used - max_context_margin
                         if budget_left <= 0:
                             logger.info(
