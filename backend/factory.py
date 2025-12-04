@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Any
 
+from backend.sglang.sgl_kernel_backend import sgl_kernel_unavailable_reason
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,12 @@ def create_backend(model_name: str, device: str, compile_model: bool = False, **
             return SglKernelQwenBackend(model_name=model_name, device=device)
         except Exception as exc:
             logger.warning(
-                "sgl_kernel backend unavailable (%s); falling back to HF/torch backend", exc
+                (
+                    "sgl_kernel backend unavailable (%s); reason=%s; "
+                    "falling back to HF/torch backend"
+                ),
+                exc,
+                sgl_kernel_unavailable_reason(),
             )
 
     # torch and hf fall back to the simplified torch backend

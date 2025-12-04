@@ -47,6 +47,30 @@ pip install -r requirements.txt
 uv sync
 ```
 
+Flash-attn install note: the wheel often builds from source on Py3.12 and needs torch visible
+to the build backend. If you hit `ModuleNotFoundError: No module named 'torch'` while building
+flash-attn, use:
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip setuptools wheel ninja packaging
+pip install torch==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+CUDA_HOME=/usr/local/cuda MAX_JOBS=$(nproc) \
+  pip install flash-attn==2.8.3 --no-build-isolation --no-cache-dir
+pip install -r requirements.txt --no-deps --no-build-isolation
+PIP_NO_BUILD_ISOLATION=1 pip install -r requirements.txt  # installs transformers/fastapi/uvicorn/etc.
+pip install numpy  # optional, removes torch numpy warning
+```
+For `uv`, add to `pyproject.toml`:
+```
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+```
+then install torch in the venv first and run `UV_BUILD_ISOLATION=0 uv sync`.
+
+sgl_kernel note (CUDA-only): install `sgl_kernel` wheels (`pip install sgl_kernel`) and ensure
+CUDA is visible (`torch.cuda.is_available() == True`). If the backend falls back to HF/torch, the
+logs now print the exact reason (import error or missing CUDA) to help debug remote environments.
+
 MPS MLX backend (optional):
 - Install `mlx` + `mlx-lm` (`pip install mlx mlx-lm` on Apple Silicon).
 - Set `BACKEND_IMPL=mlx` (auto-selected on MPS when MLX is available).
