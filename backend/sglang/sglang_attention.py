@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn.functional import scaled_dot_product_attention
 
-from backend.sgl_kernel_backend import KVPageState, SglKernelAttentionBackend, sgl_kernel_available
+from .sgl_kernel_backend import KVPageState, SglKernelAttentionBackend, sgl_kernel_available
 
 
 class RadixAttention(nn.Module):
@@ -27,7 +27,9 @@ class RadixAttention(nn.Module):
         self.layer_id = layer_id
         self.scaling = scaling or head_dim**-0.5
         self.backend = (
-            SglKernelAttentionBackend(num_heads=num_heads, head_dim=head_dim, num_kv_heads=num_kv_heads)
+            SglKernelAttentionBackend(
+                num_heads=num_heads, head_dim=head_dim, num_kv_heads=num_kv_heads
+            )
             if sgl_kernel_available()
             else None
         )
@@ -41,7 +43,6 @@ class RadixAttention(nn.Module):
         save_kv_cache: bool = True,
     ) -> torch.Tensor:
         if self.backend is None:
-            # torch fallback
             q_t = q.transpose(1, 2)
             k_t = k.transpose(1, 2)
             v_t = v.transpose(1, 2)

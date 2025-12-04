@@ -9,7 +9,7 @@ import argparse
 import logging
 from typing import Optional
 
-from backend.backend_factory import create_backend, resolve_backend_impl
+from backend.factory import create_backend, resolve_backend_impl
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 

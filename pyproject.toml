@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["api", "backend", "engine", "ipc"]
-py-modules = ["config", "bench_suite", "cli_demo", "smoke_test", "optimizations", "multi_device"]
+packages = ["api", "backend", "engine", "ipc", "utils"]
+py-modules = ["config", "bench_suite", "cli_demo", "smoke_test", "multi_device"]
 
 [tool.ruff]
 line-length = 100

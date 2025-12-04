@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from backend.backend_factory import backend_label, create_backend, resolve_backend_impl
+from backend.factory import backend_label, create_backend
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 

@@ -1,9 +1,4 @@
-"""Lightweight single-device reimplementations of sglang building blocks.
-
-These mirror the class names and signatures of sglang components but avoid
-distributed dependencies. They are intended for CPU/MPS development and to
-provide a drop-in surface for CUDA/sgl_kernel backends when available.
-"""
+"""Lightweight single-device reimplementations of sglang building blocks."""
 
 from __future__ import annotations
 
@@ -15,11 +10,6 @@ import torch.nn.functional as F
 from torch import nn
 
 logger = logging.getLogger(__name__)
-
-
-# ----------------------------
-# Core layers (single-device)
-# ----------------------------
 
 
 class RMSNorm(nn.Module):
@@ -36,17 +26,27 @@ class RMSNorm(nn.Module):
 class LayerCommunicator:
     """Placeholder for sglang's LayerCommunicator; single device no-ops."""
 
-    def pre_layer(self, hidden: torch.Tensor, residual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def pre_layer(
+        self, hidden: torch.Tensor, residual: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         return hidden, residual
 
-    def postprocess_layer(self, hidden: torch.Tensor, residual: torch.Tensor, *_: object) -> Tuple[torch.Tensor, torch.Tensor]:
+    def postprocess_layer(
+        self, hidden: torch.Tensor, residual: torch.Tensor, *_: object
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         return hidden + residual, residual
 
 
 class VocabParallelEmbedding(nn.Module):
     """Single-device embedding compatible with sglang API."""
 
-    def __init__(self, num_embeddings: int, embedding_dim: int, org_num_embeddings: Optional[int] = None, **_: object) -> None:
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        org_num_embeddings: Optional[int] = None,
+        **_: object,
+    ) -> None:
         super().__init__()
         self.org_num_embeddings = org_num_embeddings or num_embeddings
         self.embed = nn.Embedding(num_embeddings, embedding_dim)
@@ -75,11 +75,6 @@ class ParallelLMHead(nn.Module):
     def weight(self, value: torch.Tensor) -> None:  # type: ignore[override]
         with torch.no_grad():
             self.proj.weight.copy_(value)
-
-
-# ----------------------------
-# Linear blocks
-# ----------------------------
 
 
 class QKVParallelLinear(nn.Module):
@@ -111,7 +106,9 @@ class QKVParallelLinear(nn.Module):
 class RowParallelLinear(nn.Module):
     """Single-device row-parallel stub (returns output, None)."""
 
-    def __init__(self, input_size: int, output_size: int, bias: bool = False, **_: object) -> None:
+    def __init__(
+        self, input_size: int, output_size: int, bias: bool = False, **_: object
+    ) -> None:
         super().__init__()
         self.linear = nn.Linear(input_size, output_size, bias=bias)
 
@@ -128,16 +125,10 @@ class MergedColumnParallelLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
         out = self.linear(x)
-        # Split equally for gate and up branches
         split = out.shape[-1] // 2
         gate = out[..., :split]
         up = out[..., split:]
         return torch.stack([gate, up], dim=0), None, None
-
-
-# ----------------------------
-# Activation and MLP
-# ----------------------------
 
 
 def silu_and_mul(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -149,7 +140,6 @@ class QwenMLP(nn.Module):
 
     def __init__(self, hidden_size: int, intermediate_size: int, bias: bool = False) -> None:
         super().__init__()
-        # gate + up combined
         self.gate_up = nn.Linear(hidden_size, 2 * intermediate_size, bias=bias)
         self.down = nn.Linear(intermediate_size, hidden_size, bias=bias)
 
@@ -157,11 +147,6 @@ class QwenMLP(nn.Module):
         gate_up = self.gate_up(x)
         gate, up = gate_up.chunk(2, dim=-1)
         return self.down(silu_and_mul(gate, up))
-
-
-# ----------------------------
-# Logits processor (minimal)
-# ----------------------------
 
 
 class LogitsProcessor(nn.Module):

@@ -14,8 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from backend.backend_factory import backend_label, create_backend, resolve_backend_impl
-from backend.hf_runner import HFBaseline
+from backend.factory import backend_label, create_backend
+from backend.hf.baseline import HFBaseline
 from config import MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 
@@ -52,7 +52,7 @@ def _run_once(
     max_new_tokens: int,
     engine: SGLangMiniEngine,
     backend: Any,
-    hf_runner: HFBaseline,
+    hf_runner: Optional[HFBaseline],
     use_hf: bool,
     turns: int = 1,
 ) -> tuple[float, float, int]:
@@ -71,7 +71,7 @@ def _run_once(
         turn_prompt = (
             _build_chat_prompt(history, user_turn) if turns > 1 else user_turn
         )
-        if use_hf:
+        if use_hf and hf_runner is not None:
             text, _ = hf_runner.generate_streaming(
                 prompt=turn_prompt, max_new_tokens=max_new_tokens, stream_callback=cb
             )
@@ -106,7 +106,7 @@ def _summarize(samples: list[tuple[float, float, int]]) -> tuple[float, float, f
 
 def _run_suite(
     *,
-    backend: ModelBackend,
+    backend: Any,
     engine: SGLangMiniEngine,
     hf_runner: HFBaseline,
     workloads: Iterable[Workload],
@@ -154,17 +154,16 @@ def _run_suite(
                 )
             return samples
 
-        hf_workers = max(1, int(os.getenv("BENCH_HF_CONCURRENCY", "1")))
-
         mini_samples = run_batch(False, concurrency)
-        hf_samples = run_batch(True, hf_workers)
+        hf_samples = run_batch(True, max(1, int(os.getenv("BENCH_HF_CONCURRENCY", "1"))))
 
         mini_p50_ttfb, mini_p95_ttfb, mini_tp, mini_tokens = _summarize(mini_samples)
         hf_p50_ttfb, hf_p95_ttfb, hf_tp, hf_tokens = _summarize(hf_samples)
 
         print(
             f"- {wl.name}: prompt_tokens={wl.prompt_tokens} max_new_tokens={wl.max_new_tokens} "
-            f"turns={wl.turns} repeat={repeat} concurrency={concurrency} mixed_prompts={mixed_prompts}"
+            f"turns={wl.turns} repeat={repeat} concurrency={concurrency} "
+            f"mixed_prompts={mixed_prompts}"
         )
         print(
             f"  mini-sglang: tokens={mini_tokens} p50_ttfb={mini_p50_ttfb:.3f}s "

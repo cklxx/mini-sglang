@@ -11,26 +11,27 @@ Install dependencies from `requirements.txt` or the committed `pyproject.toml` a
 python bench_suite.py
 ```
 
-Defaults use the model in `MODEL_NAME`. Tune repeat/warmup/concurrency via env vars if needed.
+Defaults use the model in `MODEL_NAME`. Tune repeat/warmup/concurrency via env vars if needed. Pick backend via `BACKEND_IMPL=torch|hf|sgl|mlx` (auto-selects sgl on CUDA, mlx on MPS, torch otherwise).
 
 ### Performance levers (enabled by default unless noted)
 
-- **Caches**: prefix/prefill KV caches with radix longest-prefix lookup, LRU/LFU eviction, token budgets, page spill (`PAGE_TOKEN_BUDGET`), and manual seeding via `insert_prefix`. Chunked prefill is optional (`CHUNKED_PREFILL=1`); static KV (`ENABLE_STATIC_KV=1`) defaults on for CUDA using `StaticCache` with auto-fallback.
+- **Caches**: prefix/prefill KV caches with radix longest-prefix lookup plus LRU eviction and token budgets; manual seeding via `insert_prefix`.
 - **Scheduling & backpressure**: round robin / fsfs / random / cache-aware dispatch (`SCHEDULER_MODE`), inflight caps (`MAX_INFLIGHT_TOTAL`, `MAX_INFLIGHT_PER_ENGINE`), adaptive `max_new_tokens` downscale under load, async prefix warmup (`WARM_PREFIXES`, `ASYNC_PREFILL_QUEUE`).
-- **Fast paths**: chunked prefill optional (`CHUNKED_PREFILL=1`). Experimental CUDA graph capture on CUDA: enabled by default (`ENABLE_CUDA_GRAPH=1`), captures prefill for the first prompt length (or explicit `PREFILL_GRAPH_SEQ_LEN`) up to `PREFILL_GRAPH_MAX_LEN` (default 2048), and auto-falls-back on errors or mismatched lengths. Goal: extend to decode/flash-attn without HF shortcuts.
-- **Model loading**: tensor parallel (`TENSOR_PARALLEL_SIZE`), dtype override (`MODEL_DTYPE`/`TORCH_DTYPE`), attention impl (`ATTN_IMPL`, 默认CUDA上启用 `flash_attention_2` 可通过 `ENABLE_FLASH_ATTENTION` 控制), torch.compile (`COMPILE_MODEL`/`COMPILE_MODE`), aggressive context-safe `max_new_tokens` capping.
+- **Backends**: HF torch backend for CPU/MPS, sgl_kernel Qwen3 backend on CUDA, MLX backend on MPS, and an HF baseline mode for plain streaming; pick via `BACKEND_IMPL` or device.
 - **Observability & control**: GET `/metrics` for scheduler/inflight/cache stats and rolling latency/throughput; per-request logs include cache hit/miss counters. Optional ZMQ control channel (`ZMQ_CONTROL=1`, `ZMQ_CONTROL_ENDPOINT`) supports metrics/warm commands.
 
 ## Project layout
 ```
 requirements.txt
 config.py              # (sglang global config analogue) model choice + device selection
-backend/model_backend.py  # (sglang backend analogue) model + tokenizer + KV cache helpers
-backend/cache.py         # cache utilities (prefill/prefix LRU + radix index)
-engine/engine.py       # (sglang engine analogue) prefill + decode orchestration
-api/server.py          # (sglang API analogue) FastAPI server exposing POST /generate
+backend/hf/backend.py   # CPU/MPS HF backend with prefix/prefill cache
+backend/sglang/backend.py  # CUDA sgl_kernel backend using Qwen3Model
+backend/mlx/backend.py  # MLX backend for MPS
+backend/cache.py        # cache utilities (prefill/prefix LRU + radix index)
+engine/engine.py        # prefill + decode orchestration
+api/server.py           # FastAPI server exposing POST /generate
 cli_demo.py            # Minimal client to stream tokens in a terminal
-bench_suite.py         # Concurrent benchmark: mini-sglang vs HF streaming (single entrypoint)
+bench_suite.py         # Concurrent benchmark (single entrypoint)
 ```
 
 ## Usage
@@ -110,7 +111,7 @@ The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Ea
 * Every decode step with the token id and decoded text snippet
 * Streamed chunks as they are sent to the client
 
-Use these logs to follow the complete prefill → decode → stream lifecycle step-by-step.
+Use these logs to follow the complete prefill -> decode -> stream lifecycle step-by-step.
 
 Set `MODEL_NAME` env var to load a different HuggingFace causal LM (default: `rd211/Qwen3-0.6B-Instruct`). If you previously pulled another Qwen checkpoint, remove the cached folder so the new default can be re-downloaded cleanly. Use `MODEL_LOCAL_DIR` to point at a pre-downloaded path if you want to avoid hub downloads.
 

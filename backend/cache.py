@@ -149,7 +149,8 @@ class PrefillCache:
             return
         total_tokens = sum(length for _, _, length in self.cache.values())
         while self.cache and total_tokens > self.token_budget:
-            _, _, length = self.cache.popitem(last=False)
+            _, value = self.cache.popitem(last=False)
+            _, _, length = value
             total_tokens -= length
 
 

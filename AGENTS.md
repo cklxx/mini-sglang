@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `backend/` holds model + tokenizer setup, KV/prefix caches, and HF streaming compatibility; fast paths live in `backend/model_backend.py` and `backend/cache.py`.
+- `backend/` holds model + tokenizer setup, KV/prefix caches, and HF streaming compatibility; backends live under `backend/hf`, `backend/sglang`, and `backend/mlx`, with shared cache helpers in `backend/cache.py`.
 - `engine/engine.py` orchestrates prefill/decode, scheduling, and backpressure; `multi_device.py` spreads work across GPUs.
 - `api/server.py` is the FastAPI streaming surface; `ipc/zmq_control.py` exposes optional metrics/warm commands.
-- Root scripts: `cli_demo.py`, `smoke_test.py`, `local_bench.py`, `server_bench.py`, `config.py`, plus perf toggles in `optimizations.py`.
+- Root scripts: `cli_demo.py`, `smoke_test.py`, `local_bench.py`, `server_bench.py`, `config.py`.
 
 ## Build, Test, and Development Commands
 - Install deps: `pip install -r requirements.txt` (or `uv sync`).
@@ -16,7 +16,7 @@
 ## Coding Style & Naming Conventions
 - Python 3.10+, 4-space indent, line length 100 (see `pyproject.toml`). Type hints required; keep functions small with explicit ownership.
 - Use `logging` over prints; prefer pure helpers in `backend/` and `engine/`. Snake_case for functions/vars, PascalCase for classes, UPPER_SNAKE for env flags.
-- Keep performance switches in `optimizations.py` and `config.py`; avoid duplicating scheduler/cache logic.
+- Keep performance switches in `config.py`; avoid duplicating scheduler/cache logic.
 
 ## Testing Guidelines
 - No formal unit suite yet; rely on `smoke_test.py` for e2e coverage and the benchmarks for perf regressions. Add targeted tests or reproducible scripts when touching cache, scheduler, or control-plane code.

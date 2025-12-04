@@ -18,7 +18,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.backend_factory import create_backend, resolve_backend_impl
+from backend.factory import create_backend, resolve_backend_impl
+from backend.hf.baseline import HFBaseline
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
 from ipc.zmq_control import start_control_server
@@ -31,6 +32,8 @@ app = FastAPI(title="sglang-mini")
 STREAM_LOG_STRIDE = max(1, int(os.getenv("SERVER_STREAM_LOG_STRIDE", "32")))
 _pool: EnginePool | None = None
 _pool_lock = Lock()
+_hf_runner: HFBaseline | None = None
+_hf_runner_lock = Lock()
 _logging_configured = False
 
 
@@ -63,6 +66,15 @@ def _ensure_pool() -> EnginePool:
 def get_pool() -> EnginePool:
     """Public accessor for the lazily initialized EnginePool."""
     return _ensure_pool()
+
+
+def _ensure_hf_runner(device: str) -> HFBaseline:
+    """Lazily construct a standalone HF baseline runner (thread-safe)."""
+    global _hf_runner
+    with _hf_runner_lock:
+        if _hf_runner is None or _hf_runner.device != device:
+            _hf_runner = HFBaseline(model_name=MODEL_NAME, device=device)
+    return _hf_runner
 
 
 @app.on_event("startup")
@@ -154,11 +166,19 @@ def generate(request: GenerateRequest):
                         prompt_ids=prompt_ids,
                     )
                 else:
-                    generated_text, _ = engine.backend.generate_streaming_baseline(
-                        prompt_ids=prompt_ids,
-                        max_new_tokens=max_tokens or MAX_NEW_TOKENS_DEFAULT,
-                        stream_callback=stream_callback,
-                    )
+                    if hasattr(engine.backend, "generate_streaming_baseline"):
+                        generated_text, _ = engine.backend.generate_streaming_baseline(
+                            prompt_ids=prompt_ids,
+                            max_new_tokens=max_tokens or MAX_NEW_TOKENS_DEFAULT,
+                            stream_callback=stream_callback,
+                        )
+                    else:
+                        hf_runner = _ensure_hf_runner(engine.backend.device)
+                        generated_text, _ = hf_runner.generate_streaming(
+                            prompt=request.prompt,
+                            max_new_tokens=max_tokens or MAX_NEW_TOKENS_DEFAULT,
+                            stream_callback=stream_callback,
+                        )
                 queue.put(json.dumps({"event": "done"}).encode("utf-8") + b"\n")
                 queue.put(sentinel)
                 logger.info(

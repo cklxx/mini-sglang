@@ -9,11 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, cast
 
 logger = logging.getLogger(__name__)
 
 
+zmq: Any | None
 try:  # pragma: no cover - optional dependency
     import zmq
 except Exception:  # pragma: no cover
@@ -85,4 +86,5 @@ def send_control_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, An
     socket = ctx.socket(zmq.REQ)
     socket.connect(endpoint)
     socket.send_json(payload)
-    return socket.recv_json()
+    resp = socket.recv_json()
+    return cast(Dict[str, Any], resp)

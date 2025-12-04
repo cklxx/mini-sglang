@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from torch import nn
 
-from backend.sglang_attention import RadixAttention
-from backend.sglang_layers import (
+from .sglang_attention import RadixAttention
+from .sglang_layers import (
+    LayerCommunicator,
     LogitsProcessor,
     ParallelLMHead,
     QKVParallelLinear,
     QwenMLP,
     RMSNorm,
     VocabParallelEmbedding,
-    LayerCommunicator,
 )
+
 try:  # pragma: no cover - optional
     from sglang.srt.layers.rotary_embedding import get_rope
 except Exception:
@@ -38,22 +39,41 @@ class Qwen3Attention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim or hidden_size // num_heads
         self.qkv_proj = QKVParallelLinear(
-            hidden_size, self.head_dim, num_heads, total_num_kv_heads=num_kv_heads, bias=False
+            hidden_size,
+            self.head_dim,
+            num_heads,
+            total_num_kv_heads=num_kv_heads,
+            bias=False,
         )
         self.o_proj = nn.Linear(num_heads * self.head_dim, hidden_size, bias=False)
         self.attn = RadixAttention(
             num_heads=num_heads, num_kv_heads=num_kv_heads, head_dim=self.head_dim, layer_id=0
         )
-        self.rotary_emb = get_rope(self.head_dim, rotary_dim=self.head_dim, max_position=max_position_embeddings) if get_rope else None
+        self.rotary_emb = (
+            get_rope(
+                self.head_dim,
+                rotary_dim=self.head_dim,
+                max_position=max_position_embeddings,
+                base=10000,
+            )
+            if get_rope
+            else None
+        )
 
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         total = self.total_num_heads * self.head_dim
         kv = self.num_kv_heads * self.head_dim
         q, k, v = qkv.split([total, kv, kv], dim=-1)
-        q = q.view(hidden_states.shape[0], hidden_states.shape[1], self.total_num_heads, self.head_dim)
-        k = k.view(hidden_states.shape[0], hidden_states.shape[1], self.num_kv_heads, self.head_dim)
-        v = v.view(hidden_states.shape[0], hidden_states.shape[1], self.num_kv_heads, self.head_dim)
+        q = q.view(
+            hidden_states.shape[0], hidden_states.shape[1], self.total_num_heads, self.head_dim
+        )
+        k = k.view(
+            hidden_states.shape[0], hidden_states.shape[1], self.num_kv_heads, self.head_dim
+        )
+        v = v.view(
+            hidden_states.shape[0], hidden_states.shape[1], self.num_kv_heads, self.head_dim
+        )
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(positions, q, k)
         attn_out = self.attn(q, k, v, save_kv_cache=True)
@@ -120,8 +140,11 @@ class Qwen3Model(nn.Module):
         self.logits_processor = LogitsProcessor(None)
         self.max_position_embeddings = max_position_embeddings
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        positions = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+    def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
+        positions = (
+            torch.arange(start_pos, start_pos + input_ids.shape[1], device=input_ids.device)
+            .unsqueeze(0)
+        )
         hidden_states = self.embed_tokens(input_ids)
         for layer in self.layers:
             hidden_states = layer(positions, hidden_states)

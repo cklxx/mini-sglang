@@ -13,7 +13,7 @@ from typing import Any
 import torch
 
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
-from optimizations import warmup_engine
+from utils.runtime import warmup_engine
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,8 @@ class EnginePool:
             thread = threading.Thread(target=self._prefill_worker, daemon=True)
             thread.start()
         window = int(os.getenv("METRIC_WINDOW", "50"))
-        self._latencies = deque(maxlen=window)
-        self._throughputs = deque(maxlen=window)
+        self._latencies: deque[float] = deque(maxlen=window)
+        self._throughputs: deque[float] = deque(maxlen=window)
 
     @property
     def primary_backend(self) -> Any:

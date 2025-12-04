@@ -1,12 +1,12 @@
-"""Lightweight HF-only generation path decoupled from mini-sglang backend."""
+"""Standalone HF streaming baseline (no caches), used for 'hf' mode."""
 
 from __future__ import annotations
 
 import logging
 import os
-import time
 import threading
-from typing import Callable, List, Tuple
+import time
+from typing import Any, Callable, List, Optional, Tuple, cast
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -15,11 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_model_path(model_name: str) -> str:
-    """Local resolver to avoid coupling with mini-sglang backend."""
-    local_override = os.getenv("MODEL_LOCAL_DIR")
-    if local_override:
-        logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", local_override)
-        return local_override
+    override = os.getenv("MODEL_LOCAL_DIR")
+    if override:
+        logger.info("HFBaseline: Using MODEL_LOCAL_DIR=%s", override)
+        return override
     return model_name
 
 
@@ -31,8 +30,8 @@ class HFBaseline:
         self.device = device
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path)
-        self.model.to(self.device)
+        self.model: Any = AutoModelForCausalLM.from_pretrained(model_path)
+        cast(Any, self.model).to(torch.device(self.device))
         self.model.eval()
         self._lock = threading.Lock()
         self.eos_token_id = (
@@ -53,8 +52,6 @@ class HFBaseline:
         log_stride: int = 32,
         stream_callback: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, float]:
-        """Stream tokens using HF's TextIteratorStreamer (no mini-sglang caches)."""
-
         prompt_ids = torch.as_tensor(self.tokenize(prompt), device=self.device).unsqueeze(0)
         attention_mask = torch.ones_like(prompt_ids)
         streamer = TextIteratorStreamer(
@@ -77,11 +74,8 @@ class HFBaseline:
                 temperature=None,
             )
 
-        import threading
-
         with self._lock:
             start = time.perf_counter()
-
             thread = threading.Thread(target=_generate)
             thread.start()
 

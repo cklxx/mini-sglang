@@ -1,10 +1,4 @@
-"""Optional sgl_kernel attention backend (with safe torch fallback).
-
-This scaffolding keeps the API surface small so we can plug in the real
-sgl_kernel flash-attention backend on GPU while allowing CPU/MPS development
-with torch SDPA. The actual CUDA path needs a CUDA/ROCm wheel with
-`sgl_kernel.flash_attn`.
-"""
+"""Optional sgl_kernel attention backend (with safe torch fallback)."""
 
 from __future__ import annotations
 
@@ -53,7 +47,9 @@ class KVPageState:
 class SglKernelAttentionBackend(nn.Module):
     """Attention backend that prefers sgl_kernel but falls back to torch SDPA."""
 
-    def __init__(self, num_heads: int, head_dim: int, num_kv_heads: int, page_size: int = 512) -> None:
+    def __init__(
+        self, num_heads: int, head_dim: int, num_kv_heads: int, page_size: int = 512
+    ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
@@ -75,13 +71,10 @@ class SglKernelAttentionBackend(nn.Module):
     ) -> Tuple[torch.Tensor, KVPageState]:
         """Prefill over a prompt: compute attention and seed KV cache."""
         if not self._use_sgl:
-            # [batch, seq, heads, dim] -> [batch, heads, seq, dim] for SDPA
             attn_out = scaled_dot_product_attention(
                 q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=causal
             ).transpose(1, 2)
-            # Flatten batch*seq for consistency with decode path expectations
             attn_out = attn_out.reshape(q.shape[0], q.shape[1], -1)
-            # Allocate a simple contiguous cache for fallback
             k_cache = k.contiguous().squeeze(0)
             v_cache = v.contiguous().squeeze(0)
             page_table = torch.arange(k_cache.shape[0], device=k.device, dtype=torch.int32)[None, :]
@@ -90,7 +83,6 @@ class SglKernelAttentionBackend(nn.Module):
                 k_cache=k_cache, v_cache=v_cache, page_table=page_table, cache_seqlens=cache_seqlens
             )
 
-        # CUDA path: rely on flash_attn_with_kvcache (to be validated on GPU)
         assert _sgl_flash is not None
         attn_out = _sgl_flash.flash_attn_with_kvcache(
             q=q.reshape(-1, self.num_heads, self.head_dim),
@@ -109,7 +101,10 @@ class SglKernelAttentionBackend(nn.Module):
         page_table = torch.arange(k.shape[1], device=k.device, dtype=torch.int32)[None, :]
         cache_seqlens = torch.tensor([k.shape[1]], device=k.device, dtype=torch.int32)
         return attn_out, KVPageState(
-            k_cache=k.squeeze(0), v_cache=v.squeeze(0), page_table=page_table, cache_seqlens=cache_seqlens
+            k_cache=k.squeeze(0),
+            v_cache=v.squeeze(0),
+            page_table=page_table,
+            cache_seqlens=cache_seqlens,
         )
 
     def decode(
