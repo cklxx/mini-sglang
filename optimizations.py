@@ -22,6 +22,8 @@ def configure_torch(device: str) -> None:
         torch.set_float32_matmul_precision(precision)
     elif device == "cuda":
         torch.set_float32_matmul_precision("high")
+    elif device == "mps":
+        torch.set_float32_matmul_precision("high")
     else:
         torch.set_float32_matmul_precision("medium")
 

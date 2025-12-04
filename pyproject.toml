@@ -21,6 +21,8 @@ dependencies = [
     "modelscope",
     "pybase64",
     "pyzmq",
+    "mlx>=0.30.0",
+    "mlx-lm>=0.28.4",
 ]
 
 [tool.setuptools]

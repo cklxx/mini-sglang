@@ -46,6 +46,11 @@ class SGLangMiniEngine:
         max_tokens = self.backend.cap_max_new_tokens(len(prompt_ids), requested_tokens)
         if max_tokens is None:
             max_tokens = requested_tokens
+        if hasattr(self.backend, "prepare_generation"):
+            try:
+                self.backend.prepare_generation(max_tokens)
+            except Exception as exc:  # pragma: no cover - best-effort hint
+                logger.debug("prepare_generation hint failed on backend: %s", exc)
 
         logger.info(
             "Starting generation run | prompt_tokens=%d max_new_tokens=%d",

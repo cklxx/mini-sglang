@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from backend.model_backend import ModelBackend
+from backend.backend_factory import backend_label, create_backend, resolve_backend_impl
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
 
@@ -89,7 +89,9 @@ def main() -> None:
         format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
     )
 
-    backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
+    device = get_device()
+    backend = create_backend(model_name=MODEL_NAME, device=device)
+    logging.info("Using backend=%s device=%s", backend_label(backend), device)
     engine = SGLangMiniEngine(
         backend=backend, max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT
     )

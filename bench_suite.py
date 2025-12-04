@@ -6,16 +6,15 @@ throughput under load. Defaults are sensible; tune via env vars only.
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import os
 import random
 import statistics
 import time
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
-from backend.model_backend import ModelBackend
+from backend.backend_factory import backend_label, create_backend, resolve_backend_impl
 from backend.hf_runner import HFBaseline
 from config import MODEL_NAME, get_device
 from engine.engine import SGLangMiniEngine
@@ -52,7 +51,7 @@ def _run_once(
     prompt: str,
     max_new_tokens: int,
     engine: SGLangMiniEngine,
-    backend: ModelBackend,
+    backend: Any,
     hf_runner: HFBaseline,
     use_hf: bool,
     turns: int = 1,
@@ -188,7 +187,9 @@ def main() -> None:
         format="[%(asctime)s] [%(levelname)s] %(name)s - %(message)s",
     )
 
-    backend = ModelBackend(model_name=MODEL_NAME, device=get_device())
+    device = get_device()
+    backend = create_backend(model_name=MODEL_NAME, device=device)
+    logging.info("Using backend=%s device=%s", backend_label(backend), device)
     hf_runner = HFBaseline(model_name=MODEL_NAME, device=get_device())
     engine = SGLangMiniEngine(
         backend=backend, max_new_tokens_default=max(w.max_new_tokens for w in _default_workloads())

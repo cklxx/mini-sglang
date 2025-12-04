@@ -24,7 +24,7 @@ class EnginePool:
     def __init__(
         self,
         *,
-        ModelBackend,
+        backend_ctor,
         SGLangMiniEngine,
         model_name: str = MODEL_NAME,
         max_new_tokens_default: int = MAX_NEW_TOKENS_DEFAULT,
@@ -41,7 +41,7 @@ class EnginePool:
 
         self.engines: list[Any] = []
         for dev in devices:
-            backend = ModelBackend(model_name=model_name, device=dev, compile_model=compile_model)
+            backend = backend_ctor(model_name=model_name, device=dev, compile_model=compile_model)
             engine = SGLangMiniEngine(
                 backend=backend, max_new_tokens_default=max_new_tokens_default
             )

@@ -46,6 +46,10 @@ pip install -r requirements.txt
 uv sync
 ```
 
+MPS MLX backend (optional):
+- Install `mlx` + `mlx-lm` (`pip install mlx mlx-lm` on Apple Silicon).
+- Set `BACKEND_IMPL=mlx` (auto-selected on MPS when MLX is available).
+
 CLI demo (streaming-only):
 ```bash
 python cli_demo.py

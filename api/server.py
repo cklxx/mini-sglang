@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.model_backend import ModelBackend
+from backend.backend_factory import create_backend, resolve_backend_impl
 from config import MAX_NEW_TOKENS_DEFAULT, MODEL_NAME
 from engine.engine import SGLangMiniEngine
 from ipc.zmq_control import start_control_server
@@ -52,7 +52,7 @@ def _ensure_pool() -> EnginePool:
     with _pool_lock:
         if _pool is None:
             _pool = EnginePool(
-                ModelBackend=ModelBackend,
+                backend_ctor=create_backend,
                 SGLangMiniEngine=SGLangMiniEngine,
                 model_name=MODEL_NAME,
                 max_new_tokens_default=MAX_NEW_TOKENS_DEFAULT,
@@ -69,6 +69,8 @@ def get_pool() -> EnginePool:
 def _warm_server() -> None:
     _configure_logging()
     pool = _ensure_pool()
+    backend_impl = resolve_backend_impl(pool.primary_backend.device)
+    logger.info("Server using backend=%s device=%s", backend_impl, pool.primary_backend.device)
     warm_tokens = min(16, MAX_NEW_TOKENS_DEFAULT)
     logger.info("Server warmup starting | tokens=%d model=%s", warm_tokens, MODEL_NAME)
     pool.warm(warm_tokens)

@@ -353,7 +353,10 @@ class ModelBackend:
         """Optional attention implementation override."""
         attn_impl = os.getenv("ATTN_IMPL") or os.getenv("ATTN_IMPLEMENTATION")
         if attn_impl is None:
-            if self.device.startswith("cuda") and os.getenv("ENABLE_FLASH_ATTENTION", "1") != "0":
+            if self.device == "mps":
+                attn_impl = "sdpa"
+                logger.info("Defaulting attn_implementation=sdpa on MPS")
+            elif self.device.startswith("cuda") and os.getenv("ENABLE_FLASH_ATTENTION", "1") != "0":
                 attn_impl = "flash_attention_2"
             else:
                 return None
