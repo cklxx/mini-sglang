@@ -14,6 +14,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
+from sglang.srt.server_args import (
+    ServerArgs,
+    get_global_server_args,
+    set_global_server_args_for_scheduler,
+)
+
 from backend.factory import backend_label, create_backend
 from backend.hf.baseline import HFBaseline
 from config import MODEL_NAME, get_device
@@ -26,6 +32,25 @@ class Workload:
     prompt_tokens: int
     max_new_tokens: int
     turns: int = 1
+
+
+def _ensure_global_server_args(model_name: str, device: str) -> None:
+    """Prepare minimal sglang runtime globals so sgl_kernel backend can read them."""
+    try:
+        get_global_server_args()
+        return
+    except Exception:
+        pass
+
+    server_args = ServerArgs(
+        model_path=model_name,
+        tokenizer_path=None,
+        tokenizer_mode="auto",
+        device=device,
+        tp_size=int(os.getenv("TP_SIZE", "1")),
+        dp_size=int(os.getenv("DP_SIZE", "1")),
+    )
+    set_global_server_args_for_scheduler(server_args)
 
 
 def _make_prompt(token_count: int) -> str:
@@ -187,6 +212,7 @@ def main() -> None:
     )
 
     device = get_device()
+    _ensure_global_server_args(MODEL_NAME, device)
     backend = create_backend(model_name=MODEL_NAME, device=device)
     logging.info("Using backend=%s device=%s", backend_label(backend), device)
     hf_runner = HFBaseline(model_name=MODEL_NAME, device=get_device())
