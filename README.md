@@ -83,9 +83,9 @@ TORCH_CUDA_ARCH_LIST=10.0 bash scripts/install_sgl_kernel.sh
 The script uninstalls any existing wheel, installs build deps, and rebuilds `sgl_kernel` from
 source for the detected arch. Ensure CUDA/nvcc are available. The repository vendors upstream
 source at `third_party/sgl-kernel` so builds can run without extra downloads; override with
-`SGL_KERNEL_SRC=/path/to/sgl-kernel` to use a different checkout. If the backend still falls back
-to HF/torch, the logs now include the exact reason (import error or missing CUDA) to debug remote
-environments.
+`SGL_KERNEL_SRC=third_party/sgl-kernel` (paths are repo-relative) to use a different checkout. If
+the backend still falls back to HF/torch, the logs now include the exact reason (import error or
+missing CUDA) to debug remote environments.
 
 MPS MLX backend (optional):
 - Install `mlx` + `mlx-lm` (`pip install mlx mlx-lm` on Apple Silicon).

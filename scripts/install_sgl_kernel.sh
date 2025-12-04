@@ -9,7 +9,7 @@ cd "${ROOT_DIR}"
 
 SGL_KERNEL_VERSION="${SGL_KERNEL_VERSION:-0.3.18.post2}"
 ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-}"
-LOCAL_SRC="${SGL_KERNEL_SRC:-${ROOT_DIR}/third_party/sgl-kernel}"
+LOCAL_SRC="${SGL_KERNEL_SRC:-third_party/sgl-kernel}"
 
 if [[ -z "${ARCH_LIST}" ]]; then
     ARCH_LIST="$(python - <<'PY' || true
