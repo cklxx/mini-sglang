@@ -127,6 +127,29 @@ Multi-device CUDA (round robin):
 - Enabled by default when multiple CUDA GPUs exist (`ENABLE_MULTI_DEVICE=0` to force single device).
 - The server will instantiate one engine per GPU and round-robin requests across them, warming each on startup.
 
+### Z-Image image generation (MPS/CUDA/CPU)
+
+`z_image_mps.py` mirrors the [z-image-mps](https://github.com/ivanfioravanti/z-image-mps) CLI so you can
+generate images with `Tongyi-MAI/Z-Image-Turbo` locally. The script auto-downloads the checkpoint to
+`~/.cache/mini-sglang/z-image-turbo` (override with `Z_IMAGE_MODEL_DIR`/`--model-dir`) and picks MPS ->
+CUDA -> CPU automatically.
+
+```
+# Quick run (defaults to the Hanfu prompt)
+python z_image_mps.py
+
+# Custom prompt and aspect ratio
+python z_image_mps.py -p "Cyberpunk night market, neon haze" --aspect 16:9
+
+# Deterministic seeds + multiple images + FlashAttention2 on CUDA
+python z_image_mps.py -p "Nordic fjord at dawn" --num-images 2 --seed 123 \
+  --attention-backend flash2
+```
+
+Useful flags: `--device` to force mps/cuda/cpu, `--steps`/`--guidance-scale`/`--height`/`--width`,
+`--compile` (torch.compile on the DiT transformer), `--cpu-offload` (CUDA only), `--model` to point
+at a different repo, and `--model-dir` to reuse a local checkpoint.
+
 ### Learning-friendly logs
 
 The CLI, smoke test, and FastAPI server enable INFO-level logging by default. Each generation prints:
