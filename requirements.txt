@@ -3,8 +3,6 @@ uvicorn
 transformers
 torch
 flash-attn; platform_system == "Linux"
-accelerate
-diffusers @ git+https://github.com/huggingface/diffusers
 sentencepiece
 httpx
 pybase64
@@ -14,4 +12,3 @@ orjson
 uvloop; sys_platform != "win32"
 psutil
 pyzmq
-safetensors

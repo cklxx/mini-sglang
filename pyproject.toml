@@ -19,18 +19,15 @@ dependencies = [
     "httpx",
     "sglang==0.5.2",
     "modelscope",
-    "accelerate",
-    "diffusers @ git+https://github.com/huggingface/diffusers",
     "pybase64",
     "pyzmq",
     "mlx>=0.30.0",
     "mlx-lm>=0.28.4",
-    "safetensors",
 ]
 
 [tool.setuptools]
 packages = ["api", "backend", "engine", "ipc", "utils"]
-py-modules = ["config", "bench_suite", "cli_demo", "smoke_test", "multi_device", "z_image_mps"]
+py-modules = ["config", "bench_suite", "cli_demo", "smoke_test", "multi_device"]
 
 [tool.ruff]
 line-length = 100
