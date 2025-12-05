@@ -67,25 +67,10 @@ flash-attn = ["torch"]
 ```
 then install torch in the venv first and run `UV_BUILD_ISOLATION=0 uv sync`.
 
-sgl_kernel (CUDA-only, arch-specific): PyPI wheels are built for SM100 (B100). On A40/A100/H100
-you need an arch-matched build. Use the provided helper to rebuild locally (auto-detects arch if
-`TORCH_CUDA_ARCH_LIST` is unset, or set it explicitly as shown):
-```bash
-# A40 (SM86)
-TORCH_CUDA_ARCH_LIST=8.6 bash scripts/install_sgl_kernel.sh
-# A100 (SM80)
-TORCH_CUDA_ARCH_LIST=8.0 bash scripts/install_sgl_kernel.sh
-# H100 (SM90)
-TORCH_CUDA_ARCH_LIST=9.0 bash scripts/install_sgl_kernel.sh
-# B100 (SM100) – optional, matches upstream wheel
-TORCH_CUDA_ARCH_LIST=10.0 bash scripts/install_sgl_kernel.sh
-```
-The script uninstalls any existing wheel, installs build deps, and rebuilds `sgl_kernel` from
-source for the detected arch. Ensure CUDA/nvcc are available. The repository vendors upstream
-source at `third_party/sgl-kernel` so builds can run without extra downloads; override with
-`SGL_KERNEL_SRC=third_party/sgl-kernel` (paths are repo-relative) to use a different checkout. If
-the backend still falls back to HF/torch, the logs now include the exact reason (import error or
-missing CUDA) to debug remote environments.
+sgl_kernel (CUDA-only, arch-specific): upstream wheels now work on SM89+ GPUs (e.g., Ada/Hopper/
+Blackwell). Install from PyPI alongside torch; no vendored source or helper scripts remain in this
+repo. For older arches that lack a matching wheel, follow the upstream sgl_kernel build docs to
+compile from source. If the backend falls back to HF/torch, logs include the import/CUDA reason.
 
 MPS MLX backend (optional):
 - Install `mlx` + `mlx-lm` (`pip install mlx mlx-lm` on Apple Silicon).
@@ -141,6 +126,29 @@ The HTTP API is streaming-only.
 Multi-device CUDA (round robin):
 - Enabled by default when multiple CUDA GPUs exist (`ENABLE_MULTI_DEVICE=0` to force single device).
 - The server will instantiate one engine per GPU and round-robin requests across them, warming each on startup.
+
+### Z-Image image generation (MPS/CUDA/CPU)
+
+`z_image_mps.py` mirrors the [z-image-mps](https://github.com/ivanfioravanti/z-image-mps) CLI so you can
+generate images with `Tongyi-MAI/Z-Image-Turbo` locally. The script auto-downloads the checkpoint to
+`~/.cache/mini-sglang/z-image-turbo` (override with `Z_IMAGE_MODEL_DIR`/`--model-dir`) and picks MPS ->
+CUDA -> CPU automatically.
+
+```
+# Quick run (defaults to the Hanfu prompt)
+python z_image_mps.py
+
+# Custom prompt and aspect ratio
+python z_image_mps.py -p "Cyberpunk night market, neon haze" --aspect 16:9
+
+# Deterministic seeds + multiple images + FlashAttention2 on CUDA
+python z_image_mps.py -p "Nordic fjord at dawn" --num-images 2 --seed 123 \
+  --attention-backend flash2
+```
+
+Useful flags: `--device` to force mps/cuda/cpu, `--steps`/`--guidance-scale`/`--height`/`--width`,
+`--compile` (torch.compile on the DiT transformer), `--cpu-offload` (CUDA only), `--model` to point
+at a different repo, and `--model-dir` to reuse a local checkpoint.
 
 ### Learning-friendly logs
 
