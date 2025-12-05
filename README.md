@@ -67,25 +67,10 @@ flash-attn = ["torch"]
 ```
 then install torch in the venv first and run `UV_BUILD_ISOLATION=0 uv sync`.
 
-sgl_kernel (CUDA-only, arch-specific): PyPI wheels are built for SM100 (B100). On A40/A100/H100
-you need an arch-matched build. Use the provided helper to rebuild locally (auto-detects arch if
-`TORCH_CUDA_ARCH_LIST` is unset, or set it explicitly as shown):
-```bash
-# A40 (SM86)
-TORCH_CUDA_ARCH_LIST=8.6 bash scripts/install_sgl_kernel.sh
-# A100 (SM80)
-TORCH_CUDA_ARCH_LIST=8.0 bash scripts/install_sgl_kernel.sh
-# H100 (SM90)
-TORCH_CUDA_ARCH_LIST=9.0 bash scripts/install_sgl_kernel.sh
-# B100 (SM100) – optional, matches upstream wheel
-TORCH_CUDA_ARCH_LIST=10.0 bash scripts/install_sgl_kernel.sh
-```
-The script uninstalls any existing wheel, installs build deps, and rebuilds `sgl_kernel` from
-source for the detected arch. Ensure CUDA/nvcc are available. The repository vendors upstream
-source at `third_party/sgl-kernel` so builds can run without extra downloads; override with
-`SGL_KERNEL_SRC=third_party/sgl-kernel` (paths are repo-relative) to use a different checkout. If
-the backend still falls back to HF/torch, the logs now include the exact reason (import error or
-missing CUDA) to debug remote environments.
+sgl_kernel (CUDA-only, arch-specific): upstream wheels now work directly on SM89+ GPUs (Ada/Hopper/
+Blackwell). Install from PyPI alongside torch; this repo no longer vendors the source or ships helper
+scripts. For older architectures without a matching wheel, follow upstream sgl_kernel build docs to
+compile from source. If the backend falls back to HF/torch, logs include the import/CUDA reason.
 
 MPS MLX backend (optional):
 - Install `mlx` + `mlx-lm` (`pip install mlx mlx-lm` on Apple Silicon).
