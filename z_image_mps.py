@@ -9,6 +9,7 @@ import os
 import secrets
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Tuple
 
 import torch
@@ -187,10 +188,17 @@ def run_generation(args: argparse.Namespace) -> None:
         cpu_offload=args.cpu_offload,
     )
 
+    supports_callback = False
+    try:
+        supports_callback = "callback" in inspect.signature(pipe.__call__).parameters
+    except Exception:  # pragma: no cover - defensive
+        supports_callback = False
+
     height, width = resolve_size(args.aspect, args.height, args.width)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     num_images = max(1, args.num_images)
+    overall_start = perf_counter()
     for image_index in range(num_images):
         if args.seed is not None:
             seed = int(args.seed) + image_index
@@ -210,6 +218,24 @@ def run_generation(args: argparse.Namespace) -> None:
             height,
         )
 
+        callback_steps = max(1, args.steps // 10) if args.steps > 0 else 1
+        last_step_log = -1
+
+        def progress_callback(step: int, timestep: int, latents: object | None = None) -> None:
+            nonlocal last_step_log
+            if step == last_step_log:
+                return
+            if step in {0, args.steps - 1} or step - last_step_log >= callback_steps:
+                pct = int(((step + 1) / max(1, args.steps)) * 100)
+                logger.info("  progress: step %d/%d (%d%%)", step + 1, args.steps, pct)
+                last_step_log = step
+
+        generation_kwargs: dict[str, object] = {}
+        if supports_callback:
+            generation_kwargs["callback"] = progress_callback
+            generation_kwargs["callback_steps"] = callback_steps
+
+        image_start = perf_counter()
         with torch.inference_mode():
             result = pipe(
                 prompt=args.prompt,
@@ -219,6 +245,7 @@ def run_generation(args: argparse.Namespace) -> None:
                 num_inference_steps=args.steps,
                 guidance_scale=args.guidance_scale,
                 generator=generator,
+                **generation_kwargs,
             )
 
         output_path = build_output_path(
@@ -229,7 +256,11 @@ def run_generation(args: argparse.Namespace) -> None:
             total=num_images,
         )
         result.images[0].save(output_path)
-        logger.info("Saved image to %s", output_path)
+        image_elapsed = perf_counter() - image_start
+        logger.info("Saved image to %s (%.2fs)", output_path, image_elapsed)
+
+    total_elapsed = perf_counter() - overall_start
+    logger.info("Finished %d image(s) in %.2fs", num_images, total_elapsed)
 
 
 def build_parser() -> argparse.ArgumentParser:
