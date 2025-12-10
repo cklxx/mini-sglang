@@ -68,6 +68,51 @@ def get_pool() -> EnginePool:
     return _ensure_pool()
 
 
+def _build_chat_prompt(messages: list[ChatMessage]) -> str:
+    """Flatten OpenAI-style chat messages into a plain text prompt."""
+    parts: list[str] = []
+    for msg in messages:
+        text_segments: list[str] = []
+        if isinstance(msg.content, str):
+            text_segments.append(msg.content)
+        elif isinstance(msg.content, list):
+            for segment in msg.content:
+                if not isinstance(segment, dict):
+                    continue
+                if segment.get("type") == "text":
+                    content = segment.get("text")
+                    if isinstance(content, str):
+                        text_segments.append(content)
+        if text_segments:
+            parts.append(f"{msg.role}: {' '.join(text_segments)}")
+    return "\n".join(parts)
+
+
+def _chat_delta_chunk(
+    *,
+    model: str,
+    content: Optional[str] = None,
+    finish_reason: Optional[str] = None,
+    usage: Optional[dict[str, int]] = None,
+) -> bytes:
+    payload = {
+        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": content} if content else {},
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
 def _ensure_hf_runner(device: str) -> HFBaseline:
     """Lazily construct a standalone HF baseline runner (thread-safe)."""
     global _hf_runner
@@ -107,6 +152,136 @@ class GenerateRequest(BaseModel):
     max_new_tokens: Optional[int] = Field(None, ge=1)
     stream: Optional[bool] = True
     mode: Optional[str] = Field("sglang", description="sglang | hf")
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str | list[dict[str, object]]
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: list[ChatMessage]
+    model: Optional[str] = None
+    max_tokens: Optional[int] = Field(None, ge=1)
+    temperature: float = 0.0
+    stream: Optional[bool] = True
+    stream_options: Optional[dict[str, object]] = None
+    ignore_eos: Optional[bool] = None
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(request: ChatCompletionRequest):
+    model_name = request.model or MODEL_NAME
+    prompt = _build_chat_prompt(request.messages)
+    if not prompt:
+        raise HTTPException(status_code=400, detail="messages must include text content")
+
+    if request.stream is False:
+        pool = _ensure_pool()
+        prompt_ids = pool.primary_backend.tokenize(prompt)
+        engine, lease = pool.pick(prompt_ids=prompt_ids)
+        max_tokens = pool.adapt_max_new_tokens(request.max_tokens or MAX_NEW_TOKENS_DEFAULT)
+        generated_text = ""
+        start_time = time.perf_counter()
+        try:
+            generated_text = engine.run_generate(
+                prompt=prompt,
+                max_new_tokens=max_tokens,
+                stream_callback=lambda _: None,
+                prompt_ids=prompt_ids,
+            )
+        finally:
+            duration = time.perf_counter() - start_time
+            try:
+                gen_tokens = (
+                    len(engine.backend.tokenize(generated_text)) if generated_text else 0
+                )
+            except Exception:
+                gen_tokens = 0
+            total_tokens = len(prompt_ids) + gen_tokens
+            pool.record_generation(duration_s=duration, tokens=total_tokens)
+            pool.release(lease)
+
+        usage = {
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": gen_tokens,
+            "total_tokens": total_tokens,
+        }
+        response = {
+            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": generated_text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": usage,
+        }
+        return JSONResponse(response)
+
+    start_time = time.perf_counter()
+    queue: SimpleQueue[bytes] = SimpleQueue()
+    sentinel = b"__mini_sglang_done__"
+
+    def stream_callback(delta: str) -> None:
+        if delta:
+            queue.put(_chat_delta_chunk(model=model_name, content=delta))
+
+    def run_engine() -> None:
+        local_pool = _ensure_pool()
+        prompt_ids = local_pool.primary_backend.tokenize(prompt)
+        if local_pool.async_prefill_enabled:
+            local_pool.enqueue_prefill(prompt)
+        engine, lease = local_pool.pick(prompt_ids=prompt_ids)
+        max_tokens = local_pool.adapt_max_new_tokens(request.max_tokens or MAX_NEW_TOKENS_DEFAULT)
+        generated_text: str = ""
+        try:
+            generated_text = engine.run_generate(
+                prompt=prompt,
+                max_new_tokens=max_tokens,
+                stream_callback=stream_callback,
+                prompt_ids=prompt_ids,
+            )
+            completion_tokens = (
+                len(engine.backend.tokenize(generated_text)) if generated_text else 0
+            )
+            usage = {
+                "prompt_tokens": len(prompt_ids),
+                "completion_tokens": completion_tokens,
+                "total_tokens": len(prompt_ids) + completion_tokens,
+            }
+            queue.put(_chat_delta_chunk(model=model_name, finish_reason="stop", usage=usage))
+        except Exception as exc:  # pragma: no cover - streaming error surface
+            logger.exception("Chat completion stream failed: %s", exc)
+            err_payload = {"error": {"message": str(exc)}}
+            queue.put(f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        finally:
+            duration = time.perf_counter() - start_time
+            total_tokens = len(prompt_ids)
+            try:
+                gen_tokens = len(engine.backend.tokenize(generated_text)) if generated_text else 0
+                total_tokens += gen_tokens
+            except Exception:
+                gen_tokens = 0
+            local_pool.record_generation(duration_s=duration, tokens=total_tokens)
+            local_pool.release(lease)
+            queue.put(b"data: [DONE]\n\n")
+            queue.put(sentinel)
+
+    Thread(target=run_engine, daemon=True).start()
+
+    def event_stream() -> Generator[bytes, None, None]:
+        while True:
+            item = queue.get()
+            if item == sentinel:
+                break
+            yield item
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/generate")
