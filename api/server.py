@@ -224,8 +224,8 @@ def chat_completions(request: ChatCompletionRequest):
         return JSONResponse(response)
 
     start_time = time.perf_counter()
-    queue: SimpleQueue[bytes | object] = SimpleQueue()
-    sentinel: object = object()
+    queue: SimpleQueue[bytes] = SimpleQueue()
+    sentinel = b"__mini_sglang_done__"
 
     def stream_callback(delta: str) -> None:
         if delta:
@@ -277,7 +277,7 @@ def chat_completions(request: ChatCompletionRequest):
     def event_stream() -> Generator[bytes, None, None]:
         while True:
             item = queue.get()
-            if item is sentinel:
+            if item == sentinel:
                 break
             yield item
 

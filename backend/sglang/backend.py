@@ -72,6 +72,8 @@ class SglKernelQwenBackend:
         self.max_context_length = getattr(cfg, "max_position_embeddings", None)
         self.max_context_margin = int(os.getenv("MAX_CONTEXT_MARGIN", "16"))
 
+        self._planned_max_new_tokens: int | None = None
+
         self._init_caches()
         logger.info(
             "sgl_kernel backend ready | model=%s device=%s eos_token_id=%d",
@@ -100,6 +102,7 @@ class SglKernelQwenBackend:
 
         cache_key, cached_kv = self._maybe_get_prefill_cache(prompt_ids)
         if cached_kv is not None:
+            assert cache_key is not None
             self._restore_kv_cache(cached_kv)
             return cache_key, cached_kv
 
@@ -171,7 +174,6 @@ class SglKernelQwenBackend:
             token_budget=self.prefix_cache_token_budget,
             policy="lru",
         )
-        self._planned_max_new_tokens: int | None = None
 
     def _run_model(
         self, token_ids: List[int], start_pos: int, use_context: bool

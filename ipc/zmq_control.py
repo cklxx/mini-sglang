@@ -14,11 +14,10 @@ from typing import Any, Callable, Dict, cast
 logger = logging.getLogger(__name__)
 
 
-zmq: Any | None
 try:  # pragma: no cover - optional dependency
-    import zmq
+    import zmq as _zmq
 except Exception:  # pragma: no cover
-    zmq = None
+    _zmq = None
 
 
 class _NoopControl:
@@ -42,7 +41,7 @@ class ZMQControlServer:
         self.on_request = on_request
 
     def start(self) -> None:
-        if zmq is None:
+        if _zmq is None:
             _NoopControl().start()
             return
         thread = threading.Thread(target=self._serve, daemon=True)
@@ -50,9 +49,9 @@ class ZMQControlServer:
         logger.info("ZMQ control server listening on %s", self.endpoint)
 
     def _serve(self) -> None:
-        assert zmq is not None
-        ctx = zmq.Context.instance()
-        socket = ctx.socket(zmq.REP)
+        assert _zmq is not None
+        ctx = _zmq.Context.instance()
+        socket = ctx.socket(_zmq.REP)
         socket.bind(self.endpoint)
         while True:
             try:
@@ -75,15 +74,17 @@ class ZMQControlServer:
 def start_control_server(
     endpoint: str, handler: Callable[[Dict[str, Any]], Dict[str, Any]]
 ) -> None:
-    server = ZMQControlServer(endpoint=endpoint, on_request=handler) if zmq else _NoopControl()
+    server = (
+        ZMQControlServer(endpoint=endpoint, on_request=handler) if _zmq else _NoopControl()
+    )
     server.start()
 
 
 def send_control_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if zmq is None:
+    if _zmq is None:
         raise RuntimeError("pyzmq not installed")
-    ctx = zmq.Context.instance()
-    socket = ctx.socket(zmq.REQ)
+    ctx = _zmq.Context.instance()
+    socket = ctx.socket(_zmq.REQ)
     socket.connect(endpoint)
     socket.send_json(payload)
     resp = socket.recv_json()
