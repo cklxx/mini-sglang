@@ -121,6 +121,43 @@ Responses are JSON lines streamed chunk-by-chunk, e.g.:
 {"event": "done"}
 ```
 
+### Running GenAI-Bench (macOS-friendly)
+
+GenAI-Bench supports an `sglang` backend that talks to OpenAI-style endpoints. The FastAPI
+server now exposes `/v1/chat/completions`, so you can point GenAI-Bench at a local run for
+text-to-text tasks on macOS (MPS via MLX or CPU).
+
+1. Start the server with MPS/MLX enabled (optional but recommended on Apple Silicon):
+   ```bash
+   BACKEND_IMPL=mlx uvicorn api.server:app --port 8000
+   ```
+2. Install GenAI-Bench in your virtualenv:
+   ```bash
+   pip install genai-bench==0.0.3
+   ```
+3. Launch a benchmark against the local server (provide your dataset path per the
+   [supported tasks](https://docs.sglang.io/genai-bench/#supported-tasks)):
+   ```bash
+   genai-bench benchmark \
+     --api-backend sglang \
+     --api-base http://localhost:8000 \
+     --api-key dummy \
+     --api-model-name "${MODEL_NAME:-rd211/Qwen3-0.6B-Instruct}" \
+     --task text-to-text \
+     --iteration-type fixed \
+      --num-concurrency 1 \
+      --batch-size 1 \
+     --dataset-path ./text_dataset.json
+   ```
+   The `/v1/chat/completions` route streams OpenAI-format SSE chunks, so GenAI-Bench can
+   compute latency/throughput without additional adapters.
+
+   The repository ships two tiny sample datasets in the root directory:
+   - `text_dataset.json` is a JSON array of prompt strings and works with the default
+     TextDatasetLoader settings.
+   - `text_dataset.jsonl` is a newline-delimited variant that carries a `prompt` field per
+     record; pass `--prompt-column prompt` if you prefer to load this file.
+
 The HTTP API is streaming-only.
 
 Multi-device CUDA (round robin):
