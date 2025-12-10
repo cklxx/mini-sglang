@@ -181,11 +181,15 @@ python z_image_mps.py -p "Cyberpunk night market, neon haze" --aspect 16:9
 # Deterministic seeds + multiple images + FlashAttention2 on CUDA
 python z_image_mps.py -p "Nordic fjord at dawn" --num-images 2 --seed 123 \
   --attention-backend flash2
+
+# Run with the GGUF transformer (downloads from jayn7/Z-Image-Turbo-GGUF by default)
+python z_image_mps.py --gguf jayn7/Z-Image-Turbo-GGUF --gguf-file z_image_turbo-Q8_0.gguf
 ```
 
 Useful flags: `--device` to force mps/cuda/cpu, `--steps`/`--guidance-scale`/`--height`/`--width`,
 `--compile` (torch.compile on the DiT transformer), `--cpu-offload` (CUDA only), `--model` to point
-at a different repo, and `--model-dir` to reuse a local checkpoint.
+at a different repo, `--gguf`/`--gguf-file` to load a quantized transformer from GGUF, and
+`--model-dir` to reuse a local checkpoint.
 
 ### Learning-friendly logs
 

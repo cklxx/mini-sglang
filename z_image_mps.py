@@ -13,8 +13,8 @@ from time import perf_counter
 from typing import Tuple
 
 import torch
-from diffusers import ZImagePipeline
-from huggingface_hub import snapshot_download
+from diffusers import GGUFQuantizationConfig, ZImagePipeline, ZImageTransformer2DModel
+from huggingface_hub import hf_hub_download, snapshot_download
 
 from utils.runtime import configure_torch
 
@@ -86,6 +86,30 @@ def ensure_model_available(model_id: str, model_dir: str | None) -> str:
     return str(target_dir)
 
 
+def resolve_gguf_path(gguf: str, gguf_file: str | None, model_dir: str | None) -> str:
+    """Return a local path to the requested GGUF file, downloading if needed."""
+
+    candidate = Path(gguf).expanduser()
+    if candidate.is_file():
+        logger.info("Using local GGUF file at %s", candidate)
+        return str(candidate)
+
+    filename = gguf_file or "z_image_turbo-Q8_0.gguf"
+    target_dir = _resolve_model_dir(model_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Downloading GGUF %s from %s into %s", filename, gguf, target_dir)
+    try:
+        return hf_hub_download(
+            repo_id=gguf,
+            filename=filename,
+            local_dir=str(target_dir),
+            local_dir_use_symlinks=False,
+            resume_download=True,
+        )
+    except Exception as exc:  # pragma: no cover - download may fail on airgapped hosts
+        raise RuntimeError(f"Failed to resolve GGUF file from {gguf}: {exc}") from exc
+
+
 def create_generator(device: str, seed: int) -> torch.Generator:
     generator_device = "cpu" if device == "mps" else device
     return torch.Generator(device=generator_device).manual_seed(seed)
@@ -115,6 +139,9 @@ def load_pipeline(
     attention_backend: str,
     compile_transformer: bool,
     cpu_offload: bool,
+    gguf_path: str | None = None,
+    gguf_file: str | None = None,
+    model_dir: str | None = None,
 ) -> ZImagePipeline:
     load_kwargs: dict[str, object] = {"low_cpu_mem_usage": False}
     params = inspect.signature(ZImagePipeline.from_pretrained).parameters
@@ -123,7 +150,16 @@ def load_pipeline(
     elif "dtype" in params:
         load_kwargs["dtype"] = dtype
 
-    pipe = ZImagePipeline.from_pretrained(model_path, **load_kwargs)
+    transformer = None
+    if gguf_path:
+        resolved_gguf = resolve_gguf_path(gguf_path, gguf_file, model_dir)
+        quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+        transformer = ZImageTransformer2DModel.from_single_file(
+            resolved_gguf, quantization_config=quant_config, dtype=dtype
+        )
+        logger.info("Loaded GGUF transformer from %s", resolved_gguf)
+
+    pipe = ZImagePipeline.from_pretrained(model_path, transformer=transformer, **load_kwargs)
 
     if dtype != torch.float32 and hasattr(pipe, "vae"):
         pipe.vae.to(dtype=torch.float32)
@@ -186,6 +222,9 @@ def run_generation(args: argparse.Namespace) -> None:
         attention_backend=args.attention_backend,
         compile_transformer=args.compile,
         cpu_offload=args.cpu_offload,
+        gguf_path=args.gguf,
+        gguf_file=args.gguf_file,
+        model_dir=args.model_dir,
     )
 
     supports_callback = False
@@ -320,6 +359,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--cpu-offload",
         action="store_true",
         help="Enable CPU offload (CUDA only) to reduce VRAM usage.",
+    )
+    parser.add_argument(
+        "--gguf",
+        type=str,
+        default=None,
+        help=(
+            "Optional GGUF transformer file (path or repo id such as jayn7/Z-Image-Turbo-GGUF). "
+            "When set, only the DiT transformer loads from GGUF and the rest of the pipeline "
+            "comes from --model."
+        ),
+    )
+    parser.add_argument(
+        "--gguf-file",
+        type=str,
+        default="z_image_turbo-Q8_0.gguf",
+        help="GGUF filename to fetch when --gguf points to a repo id.",
     )
     parser.add_argument(
         "--model",
