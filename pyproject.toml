@@ -26,6 +26,8 @@ dependencies = [
     "mlx>=0.30.0",
     "mlx-lm>=0.28.4",
     "safetensors",
+    "openai>=2.9.0",
+    "partial-json-parser>=0.2.1.1.post7",
 ]
 
 [tool.setuptools]

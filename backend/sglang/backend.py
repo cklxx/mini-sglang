@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import nullcontext
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple, cast
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -14,7 +14,7 @@ from utils.runtime import configure_torch, inference_context
 
 from ..cache import CacheStats, PrefillCache, PrefixCache
 from .sgl_kernel_backend import KVPageState, sgl_kernel_available
-from .sglang_qwen import Qwen3Model
+from .sglang_qwen import Qwen3DecoderLayer, Qwen3Model
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class SglKernelQwenBackend:
         logits = logits[:, -1, :]
         return logits, None
 
-    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> Tuple[int | None, Any | None]:
+    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> tuple[int, Any] | tuple[None, None]:
         return self.prefill_cache.maybe_get(prompt_ids, self.cache_stats)
 
     def _maybe_get_prefix_cache(self, prompt_ids: List[int]) -> tuple[Tuple[int, ...], Any] | None:
@@ -201,13 +201,16 @@ class SglKernelQwenBackend:
     def _update_prefix_cache(self, prompt_ids: List[int], kv_cache: Any) -> None:
         self.prefix_cache.update(prompt_ids, kv_cache)
 
+    def _iter_decoder_layers(self) -> Iterable[Qwen3DecoderLayer]:
+        return cast(Iterable[Qwen3DecoderLayer], self.model.layers)
+
     def _reset_kv_cache(self) -> None:
-        for layer in self.model.layers:
+        for layer in self._iter_decoder_layers():
             layer.attention.attn.page_state = None
 
     def _snapshot_kv_cache(self) -> List[KVPageState | None]:
         snaps: List[KVPageState | None] = []
-        for layer in self.model.layers:
+        for layer in self._iter_decoder_layers():
             state = layer.attention.attn.page_state
             if state is None:
                 snaps.append(None)
@@ -226,7 +229,7 @@ class SglKernelQwenBackend:
         if snapshots is None:
             self._reset_kv_cache()
             return
-        for layer, snap in zip(self.model.layers, snapshots):
+        for layer, snap in zip(self._iter_decoder_layers(), snapshots):
             layer.attention.attn.page_state = snap
 
     def _kv_length(self, snapshots: List[KVPageState | None]) -> int:
@@ -253,9 +256,9 @@ class SglKernelQwenBackend:
             if "lm_head.weight" in sd:
                 self.model.lm_head.weight.copy_(sd["lm_head.weight"])
 
-            num_layers = len(self.model.layers)
-            for idx in range(num_layers):
-                layer = self.model.layers[idx]
+            layers = list(self._iter_decoder_layers())
+            num_layers = len(layers)
+            for idx, layer in enumerate(layers):
                 prefix = f"model.layers.{idx}."
                 for attr, key in (
                     ("input_layernorm.weight", prefix + "input_layernorm.weight"),

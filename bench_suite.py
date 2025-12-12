@@ -14,12 +14,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from sglang.srt.server_args import (
-    ServerArgs,
-    get_global_server_args,
-    set_global_server_args_for_scheduler,
-)
-
 from backend.factory import backend_label, create_backend
 from backend.hf.baseline import HFBaseline
 from config import MODEL_NAME, get_device
@@ -36,6 +30,18 @@ class Workload:
 
 def _ensure_global_server_args(model_name: str, device: str) -> None:
     """Prepare minimal sglang runtime globals so sgl_kernel backend can read them."""
+    try:
+        from sglang.srt.server_args import (
+            ServerArgs,
+            get_global_server_args,
+            set_global_server_args_for_scheduler,
+        )
+    except Exception as exc:  # pragma: no cover - optional dependency
+        logging.getLogger(__name__).info(
+            "Skipping sglang global server args setup (sglang import failed): %s", exc
+        )
+        return
+
     try:
         get_global_server_args()
         return

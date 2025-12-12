@@ -165,34 +165,6 @@ class MlxBackend:
     def insert_prefix(self, prompt: str) -> None:
         logger.debug("MLX backend does not support prefix warming; skipping insert_prefix")
 
-    def generate_streaming_baseline(
-        self,
-        prompt_ids: List[int],
-        max_new_tokens: int,
-        log_stride: int = 32,
-        stream_callback: Optional[Any] = None,
-    ) -> Tuple[str, float]:
-        prompt_tokens = [int(t) for t in prompt_ids]
-        start = time.perf_counter()
-        chunks: list[str] = []
-        for idx, resp in enumerate(
-            stream_generate(
-                self.model,
-                self.tokenizer,
-                prompt_tokens,
-                max_tokens=max_new_tokens,
-            ),
-            1,
-        ):
-            text_delta = resp.text
-            if stream_callback:
-                stream_callback(text_delta)
-            chunks.append(text_delta)
-            if idx == 1 or idx % max(1, log_stride) == 0:
-                logger.info("[mlx-stream] chunk %03d: %r", idx, text_delta)
-        duration = time.perf_counter() - start
-        return "".join(chunks), duration
-
     def _load_or_convert(self, model_name: str):
         try:
             return self._load_model(model_name, strict=True)

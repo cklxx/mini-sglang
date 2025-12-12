@@ -118,7 +118,9 @@ class PrefillCache:
         self.token_budget = token_budget
         self.cache: OrderedDict[str, Tuple[int, Any, int]] = OrderedDict()
 
-    def maybe_get(self, prompt_ids: List[int], stats: CacheStats) -> tuple[int | None, Any | None]:
+    def maybe_get(
+        self, prompt_ids: List[int], stats: CacheStats
+    ) -> tuple[int, Any] | tuple[None, None]:
         if self.size <= 0:
             return None, None
         prompt_key = ",".join(str(i) for i in prompt_ids)

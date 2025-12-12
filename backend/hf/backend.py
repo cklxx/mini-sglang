@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from typing import Any, Dict, List, Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 from backend.cache import CacheStats, PrefillCache, PrefixCache
 from utils.runtime import configure_torch, inference_context
@@ -38,11 +38,12 @@ class ModelBackend:
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path, trust_remote_code=trust_remote_code
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
+        model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
             model_path, trust_remote_code=trust_remote_code
         )
-        self.model.to(self.device)
-        self.model.eval()
+        model.to(self.device)  # type: ignore[arg-type]  # transformers stubs mis-handle bound to()
+        model.eval()
+        self.model = model
 
         eos_id = (
             self.tokenizer.eos_token_id
@@ -183,7 +184,7 @@ class ModelBackend:
         logits = outputs.logits[:, -1, :]
         return logits, outputs.past_key_values
 
-    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> Tuple[int | None, Any | None]:
+    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> tuple[int, Any] | tuple[None, None]:
         return self.prefill_cache.maybe_get(prompt_ids, self.cache_stats)
 
     def _maybe_get_prefix_cache(self, prompt_ids: List[int]) -> tuple[Tuple[int, ...], Any] | None:

@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+PY_BIN=${PY_BIN:-}
+if [[ -z "$PY_BIN" && -x ".venv/bin/python" ]]; then
+  PY_BIN=".venv/bin/python"
+elif [[ -z "$PY_BIN" ]]; then
+  PY_BIN="$(command -v python3)"
+fi
+
 GGUF_PATH=${1:-model/gguf/z_image_turbo-Q8_0.gguf}
 PROMPT=${PROMPT:-"Cyberpunk night market, neon haze"}
 MODEL_ID=${MODEL_ID:-"Tongyi-MAI/Z-Image-Turbo"}
@@ -24,8 +31,12 @@ if [[ ! -f "$GGUF_PATH" ]]; then
   echo "Usage: $0 /path/to/z_image_turbo-Q8_0.gguf" >&2
   exit 1
 fi
+if [[ ! -x "$PY_BIN" ]]; then
+  echo "Python binary not found (checked: $PY_BIN). Set PY_BIN or create .venv first." >&2
+  exit 1
+fi
 
-python3 - "$MODEL_ID" "$MODEL_DIR" <<'PY'
+$PY_BIN - "$MODEL_ID" "$MODEL_DIR" <<'PY'
 import sys
 from pathlib import Path
 from huggingface_hub import snapshot_download
@@ -34,21 +45,18 @@ model_id = sys.argv[1]
 model_dir = Path(sys.argv[2])
 model_dir.mkdir(parents=True, exist_ok=True)
 
-if any(model_dir.iterdir()):
-    print(f"Base pipeline already present at {model_dir}")
-else:
-    print(f"Downloading base pipeline {model_id} into {model_dir} ...")
-    snapshot_download(
-        repo_id=model_id,
-        local_dir=str(model_dir),
-        local_dir_use_symlinks=False,
-        resume_download=True,
-    )
-    print("Base pipeline ready.")
+print(f"Syncing base pipeline {model_id} into {model_dir} (resume if partial)...")
+snapshot_download(
+    repo_id=model_id,
+    local_dir=str(model_dir),
+    local_dir_use_symlinks=False,
+    resume_download=True,
+)
+print("Base pipeline ready.")
 PY
 
 PYTORCH_MPS_HIGH_WATERMARK_RATIO=${PYTORCH_MPS_HIGH_WATERMARK_RATIO:-0.0} \
-python3 z_image_mps.py \
+"$PY_BIN" z_image_mps.py \
   --gguf "$GGUF_PATH" \
   --model "$MODEL_ID" \
   --model-dir "$MODEL_DIR" \

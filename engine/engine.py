@@ -120,9 +120,8 @@ class SGLangMiniEngine:
                     generated_ids.append(next_token_id)
                     if next_token_id == eos_token_id:
                         finished = True
-                    decode_delta = None
-                    if not fast_stream_decode:
-                        decode_delta = self.backend.decode_tokens([next_token_id])
+                    # Always decode single-token deltas for user-visible streaming.
+                    decode_delta = self.backend.decode_tokens([next_token_id])
                     should_log = (
                         step_index == 0
                         or (step_index + 1) % max(1, self.decode_log_stride) == 0
@@ -140,8 +139,8 @@ class SGLangMiniEngine:
                             finished,
                             step_end - step_start,
                         )
-                    stream_callback(decode_delta if decode_delta is not None else " ")
-                    if decode_delta is not None:
+                    stream_callback(decode_delta)
+                    if not fast_stream_decode:
                         text_chunks.append(decode_delta)
                 if self.backend.device.startswith("cuda"):
                     torch.cuda.synchronize()
