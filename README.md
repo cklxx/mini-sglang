@@ -2,36 +2,47 @@
 
 A minimal, streaming-first implementation of an sglang-style text generation stack with clear API / Engine / Backend separation. Benchmarks compare this mini stack to a plain Hugging Face streaming baseline. For the full upstream project and docs, see [sglang on GitHub](https://github.com/sgl-project/sglang).
 
-### Quickstart
+## Quickstart
 
 Install dependencies from `requirements.txt` or the committed `pyproject.toml` and run the concurrent benchmark:
 
 ```bash
 # Concurrent benchmark (short/medium/long prompts; defaults need no flags)
-python bench_suite.py
+python3 bench_suite.py
 ```
 
 Defaults use the model in `MODEL_NAME`. Tune repeat/warmup/concurrency via env vars if needed. Pick backend via `BACKEND_IMPL=torch|hf|sgl|mlx` (auto-selects sgl on CUDA, mlx on MPS, torch otherwise).
 
-### Performance levers (enabled by default unless noted)
+## Performance levers (enabled by default unless noted)
 
 - **Caches**: prefix/prefill KV caches with radix longest-prefix lookup plus LRU eviction and token budgets; manual seeding via `insert_prefix`.
 - **Scheduling & backpressure**: round robin / fsfs / random / cache-aware dispatch (`SCHEDULER_MODE`), inflight caps (`MAX_INFLIGHT_TOTAL`, `MAX_INFLIGHT_PER_ENGINE`), adaptive `max_new_tokens` downscale under load, async prefix warmup (`WARM_PREFIXES`, `ASYNC_PREFILL_QUEUE`).
 - **Backends**: HF torch backend for CPU/MPS, sgl_kernel Qwen3 backend on CUDA, MLX backend on MPS, and an HF baseline mode for plain streaming; pick via `BACKEND_IMPL` or device.
 - **Observability & control**: GET `/metrics` for scheduler/inflight/cache stats and rolling latency/throughput; per-request logs include cache hit/miss counters. Optional ZMQ control channel (`ZMQ_CONTROL=1`, `ZMQ_CONTROL_ENDPOINT`) supports metrics/warm commands.
 
+## Documentation
+
+- Architecture overview: `docs/ARCHITECTURE.md`
+- Configuration (env vars): `docs/CONFIGURATION.md`
+- Development guide: `docs/DEVELOPMENT.md`
+- Benchmarks: `docs/BENCHMARKS.md`
+- sgl_kernel integration notes (work-in-progress): `SGL_KERNEL_INTEGRATION.md`
+
 ## Project layout
 ```
-requirements.txt
-config.py              # (sglang global config analogue) model choice + device selection
-backend/hf/backend.py   # CPU/MPS HF backend with prefix/prefill cache
-backend/sglang/backend.py  # CUDA sgl_kernel backend using Qwen3Model
-backend/mlx/backend.py  # MLX backend for MPS
-backend/cache.py        # cache utilities (prefill/prefix LRU + radix index)
-engine/engine.py        # prefill + decode orchestration
-api/server.py           # FastAPI server exposing POST /generate
-cli_demo.py            # Minimal client to stream tokens in a terminal
-bench_suite.py         # Concurrent benchmark (single entrypoint)
+api/                   # FastAPI server + OpenAI-compatible streaming route
+backend/               # model+tokenizer setup + caches + backend implementations
+engine/                # prefill+decode orchestration
+ipc/                   # optional ZMQ control plane
+utils/                 # runtime helpers and timers
+docs/                  # architecture/config/dev/bench docs
+
+config.py              # model choice + device selection
+bench_suite.py         # concurrent benchmark (mini-sglang vs HF baseline)
+cli_demo.py            # streaming CLI demo
+smoke_test.py          # end-to-end sanity check
+multi_device.py        # multi-GPU engine pool + scheduling + backpressure
+z_image_mps.py         # optional z-image CLI (MPS/CUDA/CPU)
 ```
 
 ## Usage
@@ -51,7 +62,7 @@ Flash-attn install note: the wheel often builds from source on Py3.12 and needs 
 to the build backend. If you hit `ModuleNotFoundError: No module named 'torch'` while building
 flash-attn, use:
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip setuptools wheel ninja packaging
 pip install torch==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 CUDA_HOME=/usr/local/cuda MAX_JOBS=$(nproc) \
@@ -78,21 +89,21 @@ MPS MLX backend (optional):
 
 CLI demo (streaming-only):
 ```bash
-python cli_demo.py
+python3 cli_demo.py
 
 # Multi-turn chat mode (keeps prior turns in context)
-python cli_demo.py --multi-turn
+python3 cli_demo.py --multi-turn
 ```
 
 End-to-end smoke test with the default model (streaming only):
 ```bash
-python smoke_test.py --max-new-tokens 32 "Hello from mini-sglang"
+python3 smoke_test.py --max-new-tokens 32 "Hello from mini-sglang"
 ```
 The streaming run exercises the full prefill + decode path and streams tokens to stdout. For non-sglang baselines, use the comparison or benchmark scripts below.
 
 Run the concurrent benchmark comparing mini-sglang and the HF streaming baseline across short/medium/long prompts with repeats:
 ```bash
-python bench_suite.py
+python3 bench_suite.py
 ```
 Defaults: repeat=3, warmup=1, concurrency=4, mixed prompts on. Tune via env `BENCH_REPEAT`/`BENCH_WARMUP`/`BENCH_CONCURRENCY`/`BENCH_MIXED_PROMPTS` as needed.
 
@@ -120,6 +131,14 @@ Responses are JSON lines streamed chunk-by-chunk, e.g.:
 ...
 {"event": "done"}
 ```
+
+OpenAI-compatible endpoints:
+
+- `POST /v1/chat/completions`: streaming chat completions; supports VLM `image_url` content when a VLM model
+  is configured (see `docs/CONFIGURATION.md`).
+- `POST /v1/images/generations`: image generation returning `b64_json` PNGs (`backend=z_image|diffusers`).
+- `POST /v1/videos/generations`: video generation returning `frames_b64_png` (or `b64_mp4` when optional
+  encoders are installed).
 
 ### Running GenAI-Bench (macOS-friendly)
 
@@ -173,17 +192,17 @@ CUDA -> CPU automatically.
 
 ```
 # Quick run (defaults to the Hanfu prompt)
-python z_image_mps.py
+python3 z_image_mps.py
 
 # Custom prompt and aspect ratio
-python z_image_mps.py -p "Cyberpunk night market, neon haze" --aspect 16:9
+python3 z_image_mps.py -p "Cyberpunk night market, neon haze" --aspect 16:9
 
 # Deterministic seeds + multiple images + FlashAttention2 on CUDA
-python z_image_mps.py -p "Nordic fjord at dawn" --num-images 2 --seed 123 \
+python3 z_image_mps.py -p "Nordic fjord at dawn" --num-images 2 --seed 123 \
   --attention-backend flash2
 
 # Run with the GGUF transformer (downloads from jayn7/Z-Image-Turbo-GGUF by default)
-python z_image_mps.py --gguf jayn7/Z-Image-Turbo-GGUF --gguf-file z_image_turbo-Q8_0.gguf
+python3 z_image_mps.py --gguf jayn7/Z-Image-Turbo-GGUF --gguf-file z_image_turbo-Q8_0.gguf
 ```
 
 Useful flags: `--device` to force mps/cuda/cpu, `--steps`/`--guidance-scale`/`--height`/`--width`,
@@ -218,3 +237,11 @@ Why sglang-style streaming is faster here:
 - Prefill + decode loop runs in-process with explicit KV reuse and minimal Python overhead between steps.
 - HF streaming baseline re-enters the generator loop and Python callback machinery per token (TextIteratorStreamer), adding per-token overhead even though it also uses KV cache.
 - Both use the same model and device (Apple M1 Pro via MPS); differences are from orchestration, not model quality.
+
+## Contributing
+
+See `CONTRIBUTING.md` (and `CODE_OF_CONDUCT.md` / `SECURITY.md` / `CHANGELOG.md`).
+
+## License
+
+MIT. See `LICENSE`.

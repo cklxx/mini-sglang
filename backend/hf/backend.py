@@ -184,7 +184,9 @@ class ModelBackend:
         logits = outputs.logits[:, -1, :]
         return logits, outputs.past_key_values
 
-    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> tuple[int, Any] | tuple[None, None]:
+    def _maybe_get_prefill_cache(
+        self, prompt_ids: List[int]
+    ) -> tuple[int, Any] | tuple[None, None]:
         return self.prefill_cache.maybe_get(prompt_ids, self.cache_stats)
 
     def _maybe_get_prefix_cache(self, prompt_ids: List[int]) -> tuple[Tuple[int, ...], Any] | None:

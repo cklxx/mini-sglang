@@ -10,184 +10,26 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Tuple
 
 import torch
-from diffusers import GGUFQuantizationConfig, ZImagePipeline, ZImageTransformer2DModel
-from huggingface_hub import hf_hub_download, snapshot_download
 
+from backend.diffusion.z_image import (
+    ASPECT_RATIOS,
+    DEFAULT_MODEL_ID,
+    create_generator,
+    ensure_model_available,
+    load_pipeline,
+    pick_device,
+    resolve_size,
+)
 from utils.runtime import configure_torch
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_ID = os.getenv("Z_IMAGE_MODEL_ID", "Tongyi-MAI/Z-Image-Turbo")
 DEFAULT_PROMPT = (
     "Young Chinese woman in red Hanfu with intricate embroidery, holding a folding fan, "
     "soft outdoor night lighting, cinematic and detailed."
 )
-
-ASPECT_RATIOS: dict[str, Tuple[int, int]] = {
-    "1:1": (1024, 1024),
-    "16:9": (1280, 720),
-    "9:16": (720, 1280),
-    "4:3": (1088, 816),
-    "3:4": (816, 1088),
-}
-
-
-def pick_device(preferred: str = "auto") -> tuple[str, torch.dtype]:
-    """Return best available device and matching dtype."""
-    requested = preferred.lower()
-    if requested != "auto":
-        if requested == "mps" and torch.backends.mps.is_available():
-            return "mps", torch.bfloat16
-        if requested == "cuda" and torch.cuda.is_available():
-            return "cuda", torch.bfloat16
-        if requested == "cpu":
-            return "cpu", torch.float32
-        logger.warning("Requested device %s unavailable; falling back to auto", preferred)
-
-    if torch.backends.mps.is_available():
-        return "mps", torch.bfloat16
-    if torch.cuda.is_available():
-        return "cuda", torch.bfloat16
-    return "cpu", torch.float32
-
-
-def _resolve_model_dir(cli_dir: str | None) -> Path:
-    env_dir = os.getenv("Z_IMAGE_MODEL_DIR") or os.getenv("MODEL_LOCAL_DIR")
-    if cli_dir:
-        return Path(cli_dir).expanduser()
-    if env_dir:
-        return Path(env_dir).expanduser()
-    cache_root = Path(
-        os.getenv("Z_IMAGE_CACHE_DIR", Path.home() / ".cache" / "mini-sglang")
-    ).expanduser()
-    return cache_root / "z-image-turbo"
-
-
-def ensure_model_available(model_id: str, model_dir: str | None) -> str:
-    """Ensure the Z-Image model is present locally and return its path."""
-    target_dir = _resolve_model_dir(model_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    has_contents = any(target_dir.iterdir())
-    if has_contents:
-        logger.info("Using existing Z-Image model at %s", target_dir)
-        return str(target_dir)
-
-    logger.info("Downloading model %s to %s", model_id, target_dir)
-    snapshot_download(
-        repo_id=model_id,
-        local_dir=str(target_dir),
-        local_dir_use_symlinks=False,
-        resume_download=True,
-    )
-    return str(target_dir)
-
-
-def resolve_gguf_path(gguf: str, gguf_file: str | None, model_dir: str | None) -> str:
-    """Return a local path to the requested GGUF file, downloading if needed."""
-
-    candidate = Path(gguf).expanduser()
-    if candidate.is_file():
-        logger.info("Using local GGUF file at %s", candidate)
-        return str(candidate)
-
-    filename = gguf_file or "z_image_turbo-Q8_0.gguf"
-    target_dir = _resolve_model_dir(model_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading GGUF %s from %s into %s", filename, gguf, target_dir)
-    try:
-        return hf_hub_download(
-            repo_id=gguf,
-            filename=filename,
-            local_dir=str(target_dir),
-            local_dir_use_symlinks=False,
-            resume_download=True,
-        )
-    except Exception as exc:  # pragma: no cover - download may fail on airgapped hosts
-        raise RuntimeError(f"Failed to resolve GGUF file from {gguf}: {exc}") from exc
-
-
-def create_generator(device: str, seed: int) -> torch.Generator:
-    generator_device = "cpu" if device == "mps" else device
-    return torch.Generator(device=generator_device).manual_seed(seed)
-
-
-def configure_attention(pipe: ZImagePipeline, backend: str) -> None:
-    backend_map = {
-        "sdpa": None,
-        "flash2": "flash",
-        "flash3": "_flash_3",
-    }
-    target = backend_map.get(backend, None)
-    if not target:
-        return
-
-    try:
-        pipe.transformer.set_attention_backend(target)
-        logger.info("Using attention backend=%s", backend)
-    except Exception as exc:  # pragma: no cover - best-effort configuration
-        logger.warning("Could not enable %s attention (%s); using default SDPA", backend, exc)
-
-
-def load_pipeline(
-    model_path: str,
-    device: str,
-    dtype: torch.dtype,
-    attention_backend: str,
-    compile_transformer: bool,
-    cpu_offload: bool,
-    gguf_path: str | None = None,
-    gguf_file: str | None = None,
-    model_dir: str | None = None,
-) -> ZImagePipeline:
-    load_kwargs: dict[str, object] = {"low_cpu_mem_usage": False}
-    params = inspect.signature(ZImagePipeline.from_pretrained).parameters
-    if "torch_dtype" in params:
-        load_kwargs["torch_dtype"] = dtype
-    elif "dtype" in params:
-        load_kwargs["dtype"] = dtype
-
-    transformer = None
-    if gguf_path:
-        resolved_gguf = resolve_gguf_path(gguf_path, gguf_file, model_dir)
-        quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
-        transformer = ZImageTransformer2DModel.from_single_file(
-            resolved_gguf, quantization_config=quant_config, dtype=dtype
-        )
-        logger.info("Loaded GGUF transformer from %s", resolved_gguf)
-
-    pipe = ZImagePipeline.from_pretrained(model_path, transformer=transformer, **load_kwargs)
-
-    if dtype != torch.float32 and hasattr(pipe, "vae"):
-        pipe.vae.to(dtype=torch.float32)
-        pipe.vae.config.force_upcast = True
-
-    configure_attention(pipe, attention_backend)
-
-    if cpu_offload and device.startswith("cuda"):
-        pipe.enable_model_cpu_offload()
-    else:
-        pipe.to(device)
-
-    if compile_transformer:
-        try:
-            pipe.transformer.compile()
-            logger.info(
-                "Compiled DiT transformer for faster inference (first run may be slower)."
-            )
-        except Exception as exc:  # pragma: no cover - optional optimization
-            logger.warning("torch.compile failed (%s); continuing without compilation", exc)
-
-    return pipe
-
-
-def resolve_size(aspect: str | None, height: int, width: int) -> tuple[int, int]:
-    if aspect:
-        return ASPECT_RATIOS[aspect]
-    return height, width
 
 
 def build_output_path(

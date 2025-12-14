@@ -21,6 +21,7 @@ dependencies = [
     "modelscope",
     "accelerate",
     "diffusers @ git+https://github.com/huggingface/diffusers",
+    "pillow",
     "pybase64",
     "pyzmq",
     "mlx>=0.30.0",

@@ -1,6 +1,6 @@
 # sgl_kernel 集成方案（不依赖 Runtime）
 
-目标：在 mini-sglang 中直接复用 sglang 的 C++/CUDA 核心（RadixAttention + flash/varlen attention + 分页 KV），而不是通过 sglang Runtime。保持现有入口（engine/bench_suite），让同一 engine 既可走纯 torch 路径（开发/CPU/MPS）又可在 GPU 上切换到 sgl_kernel。
+目标：在 mini-sglang 中直接复用 sglang 的 C++/CUDA 核心（RadixAttention + flash/varlen attention + 分页 KV），而不是通过 sglang Runtime。保持现有入口（`bench_suite.py`/`engine/engine.py`），让同一 engine 既可走纯 torch 路径（开发/CPU/MPS）又可在 GPU 上切换到 sgl_kernel。
 
 ## 组件划分
 - **注意力后端抽象**：新增 `SglKernelAttentionBackend`，接口 `prefill(qkv, cache_state, positions)` / `decode(last_token, cache_state)`，内部根据可用性选择 `sgl_kernel.flash_attn.flash_attn_with_kvcache` 或 torch SDPA 回退。对外暴露 `available()`，便于在 Mac/MPS 退回。
@@ -24,7 +24,7 @@
 - **MLP**：`Qwen2MLP` 使用 `MergedColumnParallelLinear + RowParallelLinear` (`layers/linear.py`) + `SiluAndMul` (`layers/activation.py`)；单卡可用普通线性 + SiLU*门控，接口预留 tp_size。
 - **KV cache/调度**：前向元数据在 `model_executor/forward_batch_info.py`，分配在 `mem_cache/memory_pool.py`。mini-sglang 用分页 KV（page_table/cache_seqlens/req_to_token），prefill/decode 兼容 prefix/prefill cache，engine 设定 forward 模式。
 - **集成策略**：加载 HF Qwen3 权重，替换自注意力调用为自定义 AttentionBackend（保持 q_proj/k_proj/v_proj/o_proj 权重）；保留 HF MLP/Norm/Head 或按需替换。提供开发路径（torch 回退）与 GPU 路径（sgl_kernel + 分页 KV），日志打印当前后端/维度。
-- **验证**：CPU/MPS 用 torch 路径对齐 HF generate；GPU 启用 flash 内核后跑 `bench_suite`/`local_bench`，记录 TTFB/吞吐，按需调 page_size/block 配置。
+- **验证**：CPU/MPS 用 torch 路径对齐 HF generate；GPU 启用 flash 内核后跑 `python3 bench_suite.py`，记录 TTFB/吞吐，按需调 page_size/block 配置。
 
 ## 流程
 1) **初始化**：`ModelBackend` 读取 env，尝试导入 `sgl_kernel.flash_attn`; 构建 `SglKernelAttentionBackend` 与 KV 管理器。
@@ -35,7 +35,7 @@
 
 ## 测试与验证
 - **正确性**：小模型（CPU/MPS）下启用 torch 回退，比较原路径与新路径生成结果是否一致；构造 prefix 命中与 cache 驱逐场景。
-- **性能**（云端 GPU）：启用 `ATTN_BACKEND=sgl_kernel`，运行 `bench_suite.py`/`local_bench.py`，记录 TTFB/吞吐，对比 HF TextIteratorStreamer。
+- **性能**（云端 GPU）：启用 `ATTN_BACKEND=sgl_kernel`，运行 `python3 bench_suite.py`，记录 TTFB/吞吐，对比 HF TextIteratorStreamer。
 
 ## 已知风险 / 待补工作（需 GPU 环境）
 - 需要 `sgl_kernel` 对应 CUDA/ROCm wheel；Mac/MPS 无法验证性能。

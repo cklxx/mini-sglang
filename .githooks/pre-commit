@@ -2,5 +2,28 @@
 # Run lint/type checks before commit.
 set -euo pipefail
 
-ruff check .
-mypy --ignore-missing-imports --install-types --non-interactive .
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+VENV_BIN="$ROOT/.venv/bin"
+
+if [[ -x "$VENV_BIN/ruff" ]]; then
+  RUFF="$VENV_BIN/ruff"
+elif command -v ruff >/dev/null 2>&1; then
+  RUFF="ruff"
+else
+  echo "ruff not found. Install with:" >&2
+  echo "  NO_PROXY='*' $VENV_BIN/python -m pip install ruff mypy" >&2
+  exit 1
+fi
+
+if [[ -x "$VENV_BIN/mypy" ]]; then
+  MYPY="$VENV_BIN/mypy"
+elif command -v mypy >/dev/null 2>&1; then
+  MYPY="mypy"
+else
+  echo "mypy not found. Install with:" >&2
+  echo "  NO_PROXY='*' $VENV_BIN/python -m pip install ruff mypy" >&2
+  exit 1
+fi
+
+"$RUFF" check .
+"$MYPY" --ignore-missing-imports --install-types --non-interactive .

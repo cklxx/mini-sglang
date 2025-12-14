@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Any, Callable, Generator, List, Optional, Tuple, cast
 
@@ -12,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 try:  # Lazy import so the module can be imported on non-MLX setups.
     import mlx.core as mx
-    from mlx_lm import stream_generate
     from mlx_lm.generate import generate_step
     from mlx_lm.models import cache as mlx_cache
     from mlx_lm.utils import _download as mlx_download

@@ -187,7 +187,9 @@ class SglKernelQwenBackend:
         logits = logits[:, -1, :]
         return logits, None
 
-    def _maybe_get_prefill_cache(self, prompt_ids: List[int]) -> tuple[int, Any] | tuple[None, None]:
+    def _maybe_get_prefill_cache(
+        self, prompt_ids: List[int]
+    ) -> tuple[int, Any] | tuple[None, None]:
         return self.prefill_cache.maybe_get(prompt_ids, self.cache_stats)
 
     def _maybe_get_prefix_cache(self, prompt_ids: List[int]) -> tuple[Tuple[int, ...], Any] | None:
@@ -257,7 +259,6 @@ class SglKernelQwenBackend:
                 self.model.lm_head.weight.copy_(sd["lm_head.weight"])
 
             layers = list(self._iter_decoder_layers())
-            num_layers = len(layers)
             for idx, layer in enumerate(layers):
                 prefix = f"model.layers.{idx}."
                 for attr, key in (
